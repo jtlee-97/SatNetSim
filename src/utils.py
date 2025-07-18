@@ -197,3 +197,16 @@ def draw_from_positions(inactive_positions, active_position, requesting_position
         circle = Circle((point[0], point[1]), R, color='black', fill=False, linewidth=0.5)
         ax.add_patch(circle)
     plt.savefig(f'{dir}/res_positions_{label}.png', dpi=300, bbox_inches='tight')
+
+# def calculate_rsrp(distance_km, tx_power_dbm, freq_mhz, sat_gain_dbi, ue_gain_dbi):
+#     """
+#     거리를 기반으로 RSRP를 계산하는 함수 (단위: dBm)
+#     """
+#     # 자유 공간 경로 손실 (FSPL) 계산
+#     # FSPL (dB) = 20*log10(d) + 20*log10(f) + 20*log10(4π/c) - G_tx - G_rx
+#     # 여기서는 간단하게 dB 단위로 계산
+#     fspl = 20 * math.log10(distance_km) + 20 * math.log10(freq_mhz) + 32.45
+    
+#     # RSRP = 송신전력 + 안테나 이득 - 경로손실
+#     rsrp = tx_power_dbm + sat_gain_dbi + ue_gain_dbi - fspl
+#     return rsrp
