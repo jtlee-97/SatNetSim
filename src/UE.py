@@ -63,7 +63,7 @@ class UE(Base):
     def cpu_processing(self, msg):
         with self.cpus.request() as request:
             task = msg['task']
-            if task == RRC_RECONFIGURATION:
+            if task == HO_COMMAND:
                 yield request
                 satid = msg['from']
                 # TODO one error raised for serveing satellite is none

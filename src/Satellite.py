@@ -1,10 +1,11 @@
 import simpy
-
-from Base import *
-from config import *
 import random
 
-# 메지시의 개수를 카운트하는 클래스
+# Base, config 상속
+from Base import *
+from config import *
+
+# Message 통계 수집 객체
 class cumulativeMessageCount:
     def __init__(self):
         self.total_messages = 0
@@ -44,13 +45,14 @@ class Satellite(Base):
                  identity,
                  position_x,
                  position_y,
-                 velocity,
-                 satellite_ground_delay,
-                 ISL_delay,
-                 core_delay,
+                 velocity, # 위치 업데이트를 위한 속도
+                 satellite_ground_delay, # 위성-지상간의 통신지연 시간
+                 ISL_delay, # ISL(X2 link) 통신 지연
+                 core_delay, # CPU 리소스 풀
                  AMF,
                  env):
 
+        # Base 객체 초기화
         Base.__init__(self,
                       identity=identity,
                       position_x=position_x,
@@ -65,27 +67,38 @@ class Satellite(Base):
         self.core_delay = core_delay
 
         # Logic Initialization: 동작에 필요한 내부 변수 설정
-        self.messageQ = simpy.Store(env) # 위성 개별 메시지 큐
+        self.messageQ = simpy.Store(env) # message Queue (infinite size)
         self.AMF = AMF
         self.UEs = None
         self.satellites = None
-        self.cpus = simpy.PriorityResource(env, capacity=SATELLITE_CPU)  # simpy.PriorityResource: CPU 리소스, capacity는 위성 CPU 코어 수
+        
+        # simpy.PriorityResource: where queueing processes are sorted by priority(우선순위)
+        # capacity = CPU Resource (in config.py)
+        self.cpus = simpy.PriorityResource(env, capacity=SATELLITE_CPU) 
         self.counter = cumulativeMessageCount() # 메시지 카운트 객체 초기화
 
-        # Running process (시뮬레이션 동안 처리되는 프로세스)
-        self.env.process(self.init())  # 위성 배치에 대한 초기 정보 출력
-        self.env.process(self.update_position()) # 시뮬레이션 진행 동안, 위성 위치를 지속 업데이트 
-        self.env.process(self.handle_messages()) # 메시지 큐를 감시, 들어오는 메시지를 처리
+        # Running process(SimPy>Env>process): Satellite에 Process를 정의 (To Do List 입력)
+        # env.process에 동시수행 process 리스트를 입력
+        self.env.process(self.init()) # Init process
+        self.env.process(self.update_position()) # Positioning Process
+        self.env.process(self.handle_messages()) # Message Queue Process
 
+
+    # =================== Message Process ======================
+        """
+        MessageQ(simpy:Store) > handle_messages() > Message Type Check (Accept/Drop) > if accept: CPU processing() / if drop: handle_messages()
+        
+        """
+    # Message Process Main Loop (simpy.env.process)
     def handle_messages(self):
-        # 위성 메시지 수신 및 분배 센터 (message Queue에서 작업을 가져와 CPU 처리 프로세스를 시작)
-        """ Get the task from message Q and start a CPU processing process """
-        while True: # 위성이 꺼지지 않으면 지속 수행하도록 무한 루프
-            msg = yield self.messageQ.get() # self.messageQ에서 메시지가 들어올 때까지 무한정 대기, 도착 시 msg 변수에 저장
-            # msg 형식인 json을 파이썬 딕셔너리로 변환해 data 변수에 저장
+        while True:
+            # message Queue (infinite size): msg 대기 > self.messageQ에서 get()
+            # msg (json) > python dictionary 변환 >> data에 저장
+            msg = yield self.messageQ.get()
             data = json.loads(msg) 
+                        
+            # 메시지 타입 추출 후, Measure the message count: task 종류에 따라 메시지 카운터 증가
             task = data['task']
-            # Measure the message count: task 종류에 따라 메시지 카운터 증가
             if task == MEASUREMENT_REPORT: self.counter.increment_UE_measurement()
             if task == RETRANSMISSION: self.counter.increment_UE_retransmit()
             if task == HANDOVER_ACKNOWLEDGE: self.counter.increment_satellite()
@@ -93,57 +106,64 @@ class Satellite(Base):
             if task == RRC_RECONFIGURATION_COMPLETE: self.counter.increment_UE_RA()
             if task == AMF_RESPONSE: self.counter.increment_AMF()
 
-            # 핸드오버 시작 신호인 MR, 재전송에 대해서는 특정 처리를 위한 IF 조건문
+            # Measurement Report, Re-transmission
             if task == MEASUREMENT_REPORT or task == RETRANSMISSION:
-                # CPU 큐에 대기 중인 작업이 QUEUED_SIZE 미만인 경우에만 처리
-                # self.cpus.queue는 현재 CPU에 대기 중인 작업의 큐
-                # CPU 대기 줄의 길이가 미리 설정된 최대치보다 작을 때만 메시지를 처리 (최대 처리량 초과 시 메시지 드롭)
-                if len(self.cpus.queue) < QUEUED_SIZE: # message accept 시
-                    print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now}") # 메시지 수용 로그 출력
-                    self.env.process(self.cpu_processing(msg=data, priority=2)) # 메시지 처리 프로세스를 시작, 우선순위는 2로 설정
-                else: # message drop 시
+                # Queue 대기 작업이 QUEUED_SIZE 미만인 경우에만 처리
+                if len(self.cpus.queue) < QUEUED_SIZE:
+                    print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now}") # Logging
+                    self.env.process(self.cpu_processing(msg=data, msg_priority=2)) # Message Processing (priority second)
+                else: # Message Drop
                     self.counter.increment_dropped() # message drop 카운트 증가
-                    print(f"{self.type} {self.identity} dropped msg:{msg} at time {self.env.now}") # 메시지 드롭 로그 출력
-            else: # 핸드오버 관련 메시지 처리 (MR. 재전송 외 다른 메시지 처리 시)
-                print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now}") # 메시지 수용 로그 출력
-                self.env.process(self.cpu_processing(msg=data, priority=1)) # 혼잡 문제 없이 항상 수용, 높은 우선순위로 취급
+                    print(f"{self.type} {self.identity} dropped msg:{msg} at time {self.env.now}") # Logging
+            else: # HO ACK, HO Request. RRC RC, AMF Response
+                print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now}") # Logging
+                self.env.process(self.cpu_processing(msg=data, msg_priority=1)) # Message Processing (priority first)
+
 
     # =================== Satellite functions ======================
-    # CPU에서 메시지 처리
-    def cpu_processing(self, msg, priority):
-        """ Process the message with CPU """
-        # 위성의 CPU 자원을 할당받기 위한 요청: self.cpus.request(priority=priority)는 handle_messages에서 지정한 priority 값에 따라 CPU 자원을 요청
-        with self.cpus.request(priority=priority) as request:
-            # CPU 자원 할당이 완료될 때까지 대기 (yield 기반의 Cooperative multitasking)
-            yield request
+    # Message 선별 후, 해당하는 Message Type에 따라 cpu_processing Start
+    def cpu_processing(self, msg, msg_priority):
+        # Priority 기반 CPU 요청
+        with self.cpus.request(priority=msg_priority) as request:
+            # simpy > request: 객체, request 객체 내 priority 할당
+            # with ~ as: Context Manager 문법, 사용 완료 시 객체를 자동으로 release(close)
             
-            print(f"{self.type} {self.identity} handling msg:{msg} at time {self.env.now}") # CPU 처리 로그 출력
-            # msg['task']에서 task 종류를 가져와 task 변수에 저장
-            task = msg['task']
-            # config.py에서 정의된 PROCESSING_TIME 딕셔너리에서 task에 해당하는 고정 소요 시간 (처리 시간)을 가져옴
-            processing_time = PROCESSING_TIME[task]
+            yield request # Processing Pause
+            
+            # Processing Start
+            print(f"{self.type} {self.identity} handling msg:{msg} at time {self.env.now}") # CPU 처리 Logging
+            
+            task = msg['task'] # msg 내 task 종류 확인
+            processing_time = PROCESSING_TIME[task] # task time (in config.py > PROCESSING_TIME)
 
-            # MEASUREMENT REPORT / RETRANSMISSION을 수신
+            # (Serving Satellite) Message Type: MEASUREMENT REPORT / RETRANSMISSION
             if task == MEASUREMENT_REPORT or task == RETRANSMISSION:
-                ueid = msg['from']
-                candidates = msg['candidate']
-                UE = self.UEs[ueid]
-                # UE가 현재 위성과 연결되어 있는지 확인 후, processing_time 만큼 CPU 처리 시간을 시뮬레이션에 반영
-                if self.connected(UE):
-                    yield self.env.timeout(processing_time)
+                ueid = msg['from'] # Message를 전송한 UE ID
+                candidates = msg['candidate'] # 핸드오버 후보 위성 목록
+                UE = self.UEs[ueid] # UE ID를 활용해 UE 객체 호출
                 
+                # 위성과 UE의 연결 상태 확인
                 if self.connected(UE):
-                    # send the response to UE
+                    yield self.env.timeout(processing_time) # 해당 시, 메시지 처리 시간 반영 (sim time 소모)
+                
+                # 메시지 처리 후에도 연결 상태 다시 확인 (도중 연결 손실 시 다음절차 진행 X)
+                if self.connected(UE):
+                    # Candidate Satellite에게 HO Request 준비
                     data = {
-                        "task": HANDOVER_REQUEST,
-                        "ueid": ueid
+                        "task": HANDOVER_REQUEST, # Message 생성
+                        "ueid": ueid # 대상 UE ID 설정
                     }
+                    
                     # for now, just random. TODO
-                    """ 수정이 필요한 단계: 핸드오버를 아무 위성에게 무작위로 진행 (2.0 버전까지 미적용)"""
+                    """ 
+                    현 단계: target 위성 랜덤 선택
+                    향후 추진: 핸드오버 조건식에 대한 판별 구현 필요 
+                    """
                     target_satellite_id = random.choice(candidates) 
                     target_satellite = self.satellites[target_satellite_id]
+                    
+                    # 선택된 Target 위성에게 Handover Request message 전송 프로세스 시작
                     self.env.process(
-                        # 메시지를 타겟 위성에게 전송하는 프로세스 시작
                         self.send_message(
                             delay=self.ISL_delay,
                             msg=data,
@@ -152,41 +172,19 @@ class Satellite(Base):
                         )
                     )
             
-            # HANDOVER ACKNOWLEDGE을 수신
-            elif task == HANDOVER_ACKNOWLEDGE:
-                satellite_id = msg['from']
-                ueid = msg['ueid']
-                UE = self.UEs[ueid]
-                # UE 연결 상태 확인, CPU 처리시간 처리
-                if self.connected(UE):
-                    yield self.env.timeout(processing_time)
-                # HO COMMAND 생성 (RRC RECONFIGURATION)
-                if self.connected(UE):
-                    data = {
-                        # RRC RECONFIGURATION (HO COMMAND) 메시지를 전송
-                        "task": RRC_RECONFIGURATION,
-                        "targets": [satellite_id],
-                    }
-                    self.env.process(
-                        self.send_message(
-                            delay=self.satellite_ground_delay,
-                            msg=data,
-                            Q=UE.messageQ,
-                            to=UE
-                        )
-                    )
             
-            # HANDOVER REQUEST를 수신
+            # (Candidate Satellite) Message Type: HANDOVER REQUEST
             elif task == HANDOVER_REQUEST:
                 satellite_id = msg['from']
                 ueid = msg['ueid']
-                yield self.env.timeout(processing_time) # CPU 처리 시간 반영
+                
+                yield self.env.timeout(processing_time) # Handover Request Message 처리
+                
                 # HANDOVER REQUEST ACKNOWLEDGE 메시지 생성
                 data = {
                     "task": HANDOVER_ACKNOWLEDGE,
                     "ueid": ueid
                 }
-                # SOURCE SATELLITE에게 HANDOVER REQUEST ACKNOWLEDGE 메시지를 전송
                 source_satellite = self.satellites[satellite_id]
                 self.env.process(
                     self.send_message(
@@ -197,12 +195,41 @@ class Satellite(Base):
                     )
                 )
             
-            # RRC RECONFIGURATION COMPLETE을 수신 (Target SATELLITE 대상)    
+            
+            # (Serving Satellite) Message Type: HANDOVER ACKNOWLEDGE
+            elif task == HANDOVER_ACKNOWLEDGE:
+                satellite_id = msg['from']
+                ueid = msg['ueid']
+                UE = self.UEs[ueid]
+                
+                # UE 연결 상태 확인, CPU 처리시간 처리
+                if self.connected(UE):
+                    yield self.env.timeout(processing_time) # Handover Acknowledge Message 처리
+                    
+                # HO COMMAND(RRC RECONFIGURATION) 생성
+                if self.connected(UE):
+                    data = {
+                        # HO COMMAND(RRC RECONFIGURATION) 메시지를 전송
+                        "task": HO_COMMAND,
+                        "targets": [satellite_id], # Target 위성 ID 전달
+                    }
+                    self.env.process(
+                        self.send_message(
+                            delay=self.satellite_ground_delay,
+                            msg=data,
+                            Q=UE.messageQ,
+                            to=UE
+                        )
+                    )
+            
+            
+            # (Target Satellite) Message Type: RRC RECONFIGURATION COMPLETE
             elif task == RRC_RECONFIGURATION_COMPLETE:
                 ue_id = msg['from']
                 UE = self.UEs[ue_id]
                 yield self.env.timeout(processing_time)
-                # DATA 1: UE에게 보내는 HANDOVER RECONFIGURATION COMPLETE RESPONSE 메시지
+                
+                # DATA 1: (to UE) HANDOVER RECONFIGURATION COMPLETE RESPONSE Message
                 data = {
                     "task": RRC_RECONFIGURATION_COMPLETE_RESPONSE,
                 }
@@ -214,10 +241,11 @@ class Satellite(Base):
                         to=UE
                     )
                 )
-                # DATA 2: AMF에게 보내는 PATH SHIFT REQUEST 메시지
+                
+                # DATA 2: (to AMF) PATH SHIFT REQUEST Message
                 data2 = {
                     "task": PATH_SHIFT_REQUEST,
-                    "previous_id": msg['previous_id']
+                    "previous_id": msg['previous_id'] # 이전 Satellite ID 전달
                 }
                 self.env.process(
                     self.send_message(
@@ -228,21 +256,20 @@ class Satellite(Base):
                     )
                 )
             
-            # AMF RESPONSE을 수신 (Path Shift 완료)
+            
+            # Message Type: AMF RESPONSE을 수신 (AMF의 Path Shift 완료)
             elif task == AMF_RESPONSE:
                 yield self.env.timeout(processing_time)
             print(f"{self.type} {self.identity} finished processing msg:{msg} at time {self.env.now}")
 
+
+    # Continuous updating the object location.
+    # env.process(self.update_position() 등록, Simulation 시작시 동시 실행)
     def update_position(self):
-        """ Continuous updating the object location. """
         while True:
-            # print((len(self.messageQ.items)))
-            yield self.env.timeout(1)  # Time between position updates
-            # Update x and y based on velocity
-            # Calculate time ratio
-            ratio = 1 / 1000
-            # direction set to right
-            self.position_x += self.velocity * ratio
+            yield self.env.timeout(1) # 위치 업데이트 주기 (ms)
+            ratio = 1 / 1000 # Calculate time ratio (7.56*1000 m/s > 1ms)
+            self.position_x += self.velocity * ratio # moving to x axis
 
     # ==================== Utils (Not related to Simpy) ==============
     # Check if the UE is connected to this satellite
@@ -252,4 +279,4 @@ class Satellite(Base):
         if UE.serving_satellite is None:
             return False
         else:
-            return UE.serving_satellite.identity == self.identity
+            return UE.serving_satellite.identity == self.identity # UE의 서빙위성 ID와 자기(위성)의 ID를 비교
