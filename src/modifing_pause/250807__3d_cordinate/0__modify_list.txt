@@ -1,0 +1,12 @@
+모든 관련 파일을 2D 좌표계에서 3D 좌표계로 성공적으로 수정했습니다.
+
+**수정된 파일 및 내용 요약:**
+
+1. **`Base.py`**: `__init__` 메서드에 `position_z`를 추가하고, `init` 메서드의 출력 메시지를 3D 좌표를 포함하도록 업데이트했습니다.
+2. **`AMF.py`**: `Base.__init__` 호출 시 `position_z=0`을 추가했습니다.
+3. **`Satellite.py`**: `__init__` 메서드에 `position_z`를 추가하고, `update_position` 메서드에서 `position_y`와 `position_z`도 `position_x`와 동일하게 업데이트되도록 수정했습니다.
+4. **`UE.py`**: `__init__` 메서드에 `position_z`를 추가하고, `covered_by`, `send_request_condition`, `outside_coverage` 함수 내의 거리 계산을 3D 좌표를 사용하도록 변경했습니다.
+5. **`config.py`**: `POS_SATELLITES` 정의에 Z-좌표(현재 0)를 추가했습니다.
+6. **`main.py`**: `Satellite` 및 `UE` 객체 생성 시 `position_z`를 전달하도록 수정했으며, `global_stats_collector_draw_middle` 함수에서 `utils.draw_from_positions`를 호출할 때 3D 위치를 사용하도록 업데이트했습니다. 또한 `utils.generate_points_with_ylim` 함수에 Z-좌표를 전달하도록 수정했습니다.
+7. **`utils.py`**: `DataCollection.read_UEs`에서 `position_z`를 저장하도록 변경했습니다. `generate_points` 및 `generate_points_with_ylim` 함수가 3D 좌표를 생성하도록 수정했으며, `draw_from_positions` 함수를 3D 플로팅을 사용하도록 변경하고 2D 원 플로팅 로직을 제거했습니다.
+8. **`animation.py`**: 3D 플로팅 로직은 `utils.py`에서 처리되므로, `animation.py`는 원래 상태로 되돌려 이미지 결합 역할만 수행하도록 했습니다.

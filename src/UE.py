@@ -300,6 +300,58 @@ class UE(Base):
         # TODO We may want to remove the second condition someday...
         return d1_serve >= SATELLITE_R and self.position_x < self.serving_satellite.position_x
 
+
+
+    # ==================== Geometry Calculation Functions ======================
+    def get_geometry_info(self, satellite):
+        """
+        특정 위성과의 기하학적 정보(거리, 고도각, 안테나 각도)를 한번에 계산하여 반환합니다.
+
+        Args:
+            satellite (Satellite): 정보를 계산할 대상 위성 객체
+
+        Returns:
+            dict: 거리(m), 고도각(degree), 안테나 각도(degree)를 포함하는 딕셔너리
+        """
+        # --- 1. 직선 거리 (Slant Distance) 계산 ---
+        # 지상에서의 2D 거리 (dx, dy)와 고도 차이(dz)를 이용해 3D 직선 거리를 계산합니다.
+        dx = self.position_x - satellite.position_x
+        dy = self.position_y - satellite.position_y
+        # UE의 고도는 0으로 가정합니다.
+        dz = SC9_SATELLITE_ALTITUDE - 0
+        
+        slant_distance = math.sqrt(dx**2 + dy**2 + dz**2)
+
+        # --- 2. 고도각 (Elevation Angle) 계산 ---
+        # MATLAB의 GET_UV_ELEV.m 코드를 Python으로 변환한 것입니다.
+        # 지구 중심, UE, 위성이 이루는 삼각형에 사인 법칙을 적용한 공식입니다.
+        try:
+            # asin의 입력값은 -1과 1 사이여야 하므로, 부동소수점 오류 방지를 위해 clamp 처리
+            arg = (SC9_SATELLITE_ALTITUDE**2 + 2*SC9_SATELLITE_ALTITUDE*EARTH_RADIUS - slant_distance**2) / (2*slant_distance*EARTH_RADIUS)
+            arg = max(-1.0, min(1.0, arg))
+            elevation_angle = math.degrees(math.asin(arg))
+        except ValueError:
+            elevation_angle = -90 # 계산 불가능한 경우 (예: 위성이 지구 반대편)
+
+        # --- 3. 안테나 각도 (Antenna Angle / Off-boresight Angle) 계산 ---
+        # 위성 안테나의 중심(Boresight, Nadir)에서 UE가 얼마나 벗어나 있는지를 나타내는 각도입니다.
+        try:
+            # acos의 입력값은 -1과 1 사이여야 하므로, clamp 처리
+            arg = SC9_SATELLITE_ALTITUDE / slant_distance
+            arg = max(-1.0, min(1.0, arg))
+            antenna_angle = math.degrees(math.acos(arg))
+            # 또는 atan2를 이용하는 더 안정적인 방법:
+            # horizontal_distance = math.sqrt(dx**2 + dy**2)
+            # antenna_angle = math.degrees(math.atan2(horizontal_distance, SC9_SATELLITE_ALTITUDE))
+        except ValueError:
+            antenna_angle = 90 # 계산 불가능한 경우
+
+        return {
+            "distance": slant_distance,
+            "elevation_angle": elevation_angle,
+            "antenna_angle": antenna_angle
+        }
+    
     
 # # [추가] RSRP 계산에 필요한 유틸리티 함수
 # # utils.py에 넣어도 되지만, 편의를 위해 여기에 직접 추가합니다.

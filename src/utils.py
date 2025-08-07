@@ -220,8 +220,8 @@ def draw_from_positions(inactive_positions, active_position, requesting_position
     plt.close('all')
     plt.clf()
     fig, ax = plt.subplots(figsize=(8, 8))
-    x_range = (-1.2*R, 1.2*R)
-    y_range = (-1.2*R, 1.2*R)
+    x_range = (-3.0*R, 3.0*R) # 1.2
+    y_range = (-3.0*R, 3.0*R)
     plt.xlim(x_range)
     plt.ylim(y_range)
     if len(inactive_positions) != 0:

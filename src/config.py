@@ -5,7 +5,7 @@ SEED = 10 # Random Seed
 DURATION = 10000 # [ms]
 
 # NOTE: ENTITIES CONFIG
-NUMBER_UE = 1 # UE 단말 수
+NUMBER_UE = 100 # UE 단말 수
 SATELLITE_R = 25 * 1000 # 위성 커버리지 반경 (m)
 SATELLITE_V = 7.56 * 1000 # 위성 이동속도 (m/s)
 
@@ -86,6 +86,7 @@ INACTIVE = "INACTIVE"
 # NOTE: General Parameters
 LIGHT_SPEED = 299792458             # 빛의 속도 (m/s)
 BOLTZMANN_CONSTANT = 1.380649e-23   # 볼츠만 상수
+EARTH_RADIUS = 6371*1000            # [m]
 
 # NOTE: 3GPP System Level Simulation Parameters
 # ㄴ Study Case 9: LEO-600 Satellite Parameters
