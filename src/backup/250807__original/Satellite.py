@@ -101,9 +101,8 @@ class Satellite(Base):
             task = data['task']
             if task == MEASUREMENT_REPORT: self.counter.increment_UE_measurement()
             if task == RETRANSMISSION: self.counter.increment_UE_retransmit()
-            if task == HANDOVER_REQUEST_ACKNOWLEDGE: self.counter.increment_satellite()
+            if task == HANDOVER_ACKNOWLEDGE: self.counter.increment_satellite()
             if task == HANDOVER_REQUEST: self.counter.increment_satellite()
-            if task == RRC_RANDOM_ACCESS: self.counter.increment_UE_RA()
             if task == RRC_RECONFIGURATION_COMPLETE: self.counter.increment_UE_RA()
             if task == AMF_RESPONSE: self.counter.increment_AMF()
 
@@ -183,7 +182,7 @@ class Satellite(Base):
                 
                 # HANDOVER REQUEST ACKNOWLEDGE 메시지 생성
                 data = {
-                    "task": HANDOVER_REQUEST_ACKNOWLEDGE,
+                    "task": HANDOVER_ACKNOWLEDGE,
                     "ueid": ueid
                 }
                 source_satellite = self.satellites[satellite_id]
@@ -197,8 +196,8 @@ class Satellite(Base):
                 )
             
             
-            # (Serving Satellite) Message Type: HANDOVER_REQUEST_ACKNOWLEDGE
-            elif task == HANDOVER_REQUEST_ACKNOWLEDGE:
+            # (Serving Satellite) Message Type: HANDOVER ACKNOWLEDGE
+            elif task == HANDOVER_ACKNOWLEDGE:
                 satellite_id = msg['from']
                 ueid = msg['ueid']
                 UE = self.UEs[ueid]
@@ -224,13 +223,15 @@ class Satellite(Base):
                     )
             
             
-            # (Target Satellite) Message Type: RANDOM_ACCESS
-            elif task == RRC_RANDOM_ACCESS:
+            # (Target Satellite) Message Type: RRC RECONFIGURATION COMPLETE
+            elif task == RRC_RECONFIGURATION_COMPLETE:
                 ue_id = msg['from']
                 UE = self.UEs[ue_id]
                 yield self.env.timeout(processing_time)
+                
+                # DATA 1: (to UE) HANDOVER RECONFIGURATION COMPLETE RESPONSE Message
                 data = {
-                    "task": RRC_ULGRANT,
+                    "task": RRC_RECONFIGURATION_COMPLETE_RESPONSE,
                 }
                 self.env.process(
                     self.send_message(
@@ -240,27 +241,7 @@ class Satellite(Base):
                         to=UE
                     )
                 )
-            
-            
-            # (Target Satellite) Message Type: RRC RECONFIGURATION COMPLETE
-            elif task == RRC_RECONFIGURATION_COMPLETE:
-                ue_id = msg['from']
-                UE = self.UEs[ue_id]
-                yield self.env.timeout(processing_time)
                 
-                # BHO:: UE: ULGRANT 수신 후 RRC RECONFIGURATION COMPLETE 이후, 추가 message X
-                # # DATA 1: (to UE) HANDOVER RECONFIGURATION COMPLETE RESPONSE Message
-                # data = {
-                #     "task": RRC_RECONFIGURATION_COMPLETE_RESPONSE,
-                # }
-                # self.env.process(
-                #     self.send_message(
-                #         delay=self.satellite_ground_delay,
-                #         msg=data,
-                #         Q=UE.messageQ,
-                #         to=UE
-                #     )
-                # )
                 # DATA 2: (to AMF) PATH SHIFT REQUEST Message
                 data2 = {
                     "task": PATH_SHIFT_REQUEST,

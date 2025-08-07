@@ -93,51 +93,27 @@ class UE(Base):
                     self.timestamps[-1]['timestamp'].append(self.env.now)
                     self.timestamps[-1]['isSuccess'] = True
                     
-            # # Message Type: RRC RECONFIGURATION COMPLETE RESPONSE 
-            # # CURRENT UE STATE: RRC_CONFIGURED
-            # elif task == RRC_RECONFIGURATION_COMPLETE_RESPONSE:
-            #     yield request
-            #     satid = msg['from']
-            #     satellite = self.satellites[satid] # all Satellite list check
-                
-            #     # TODO satid가 target cell인지 검증하는 절차가 확인으로 추가가 필요함
-            #     if self.covered_by(satid): # using coverd_by function
-            #         self.serving_satellite = satellite # msg trans. satellite
-            #         self.state = ACTIVE # State Change
-            #         self.timestamps[-1]['timestamp'].append(self.env.now) # Adding: for MIT
-            #         print(f"{self.type} {self.identity} finished handover at {self.env.now}")
-            
-            # 여기서 task = ULGRANT가 될때로 변경?
-            elif task == RRC_ULGRANT:
+            # Message Type: RRC RECONFIGURATION COMPLETE RESPONSE 
+            # CURRENT UE STATE: RRC_CONFIGURED
+            elif task == RRC_RECONFIGURATION_COMPLETE_RESPONSE:
                 yield request
                 satid = msg['from']
-                target_satellite = self.satellites[satid] # all Satellite list check
+                satellite = self.satellites[satid] # all Satellite list check
                 
                 # TODO satid가 target cell인지 검증하는 절차가 확인으로 추가가 필요함
                 if self.covered_by(satid): # using coverd_by function
-                    self.serving_satellite = target_satellite # msg trans. satellite
+                    self.serving_satellite = satellite # msg trans. satellite
                     self.state = ACTIVE # State Change
                     self.timestamps[-1]['timestamp'].append(self.env.now) # Adding: for MIT
                     print(f"{self.type} {self.identity} finished handover at {self.env.now}")
-                    data = {
-                        "task": RRC_RECONFIGURATION_COMPLETE, # RRC RECONFIGURATION COMPLETE 메시지 생성
-                        "previous_id": self.previous_serving_sat_id,
-                    }
-                    self.env.process(
-                        self.send_message(
-                            delay=self.satellite_ground_delay,
-                            msg=data,
-                            Q=self.serving_satellite.messageQ,
-                            to=self.serving_satellite
-                        )
-                    )
-                    print('Send RRC_RECONFIGURATION_COMPLETE message')
+
 
     # =================== Monitoring Process ======================
     # UE 상태를 모니터링, 필요한 경우 메시지를 전송
     # 주기적으로 send_request_condition() 함수(UE가 현재 위치에서 RRC 구성 요청을 보낼 수 있는지 여부를 판단)를 호출
     def action_monitor(self):
         while True:
+            
             # --- ACTION: Send Measurement Report --- 
             if self.state == ACTIVE and self.send_request_condition(): # Condition
                 candidates = []
@@ -206,7 +182,8 @@ class UE(Base):
                 if self.targetID and self.covered_by(self.targetID): # CHECK
                     target = self.satellites[self.targetID]
                     data = {
-                        "task": RRC_RANDOM_ACCESS, # RRC RECONFIGURATION COMPLETE 메시지 생성
+                        "task": RRC_RECONFIGURATION_COMPLETE, # RRC RECONFIGURATION COMPLETE 메시지 생성
+                        "previous_id": self.previous_serving_sat_id, # 이전 서빙 위성 ID를 포함 (for PATH SWITCHING)
                     }
                     self.env.process(
                         self.send_message(
@@ -216,42 +193,7 @@ class UE(Base):
                             to=target
                         )
                     )
-                    self.state = WAITING_RRC_ULGRANT # STATE CHANGE
-            
-            # # --- ACTION: RANDOM ACCESS Procedure --- 
-            # if self.state == RRC_WAITING_RRC_ULGRANT:  # Condition: RRC_CONFIGURED (HO CMD 수신 상태)
-            #     if self.targetID and self.covered_by(self.targetID): # CHECK
-            #         target = self.satellites[self.targetID]
-            #         data = {
-            #             "task": RRC_RECONFIGURATION_COMPLETE, # RRC RECONFIGURATION COMPLETE 메시지 생성
-            #         }
-            #         self.env.process(
-            #             self.send_message(
-            #                 delay=self.satellite_ground_delay,
-            #                 msg=data,
-            #                 Q=target.messageQ,
-            #                 to=target
-            #             )
-            #         )
-            #         self.state = WAITING_RRC_RECONFIGURATION_COMPLETE_RESPONSE # STATE CHANGE
-                    
-            
-            # if self.state == RRC_CONFIGURED:  # Condition: RRC_CONFIGURED (HO CMD 수신 상태)
-            #     if self.targetID and self.covered_by(self.targetID): # CHECK
-            #         target = self.satellites[self.targetID]
-            #         data = {
-            #             "task": RRC_RECONFIGURATION_COMPLETE, # RRC RECONFIGURATION COMPLETE 메시지 생성
-            #             "previous_id": self.previous_serving_sat_id, # 이전 서빙 위성 ID를 포함 (for PATH SWITCHING)
-            #         }
-            #         self.env.process(
-            #             self.send_message(
-            #                 delay=self.satellite_ground_delay,
-            #                 msg=data,
-            #                 Q=target.messageQ,
-            #                 to=target
-            #             )
-            #         )
-            #         self.state = WAITING_RRC_RECONFIGURATION_COMPLETE_RESPONSE # STATE CHANGE
+                    self.state = WAITING_RRC_RECONFIGURATION_COMPLETE_RESPONSE # STATE CHANGE
                     
             # Switch to INACTIVE State
             if self.serving_satellite is not None and self.outside_coverage():

@@ -1,4 +1,5 @@
 import random
+import csv
 
 import math
 import matplotlib.pyplot as plt
@@ -30,6 +31,47 @@ class DataCollection:
             UE = UEs[id]
             self.UE_time_stamp[id] = UE.timestamps
             self.UE_positions[id] = (UE.position_x, UE.position_y)
+
+    def save_to_csv(self, filepath):
+        # 데이터가 없는 경우 실행하지 않음
+        if not self.x:
+            return
+
+        # 헤더 생성
+        header = ['Time (ms)']
+        # 각 위성별 데이터 필드 추가
+        sat_ids = sorted(self.numberUnProcessedMessages.keys())
+        metrics = [
+            ('UnprocessedMessages', self.numberUnProcessedMessages),
+            ('CumulativeTotal', self.cumulative_total_messages),
+            ('CumulativeFromUEMeasurement', self.cumulative_message_from_UE_measurement),
+            ('CumulativeFromUERetransmit', self.cumulative_message_from_UE_retransmit),
+            ('CumulativeFromUERA', self.cumulative_message_from_UE_RA),
+            ('CumulativeFromSatellite', self.cumulative_message_from_satellite),
+            ('CumulativeDropped', self.cumulative_message_from_dropped),
+            ('CumulativeFromAMF', self.cumulative_message_from_AMF)
+        ]
+
+        for sat_id in sat_ids:
+            for metric_name, _ in metrics:
+                header.append(f'Sat_{sat_id}_{metric_name}')
+        
+        header.append('UEsWaitingForResponse')
+
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+
+            # 데이터 행 쓰기
+            for i in range(len(self.x)):
+                row = [self.x[i]]
+                for sat_id in sat_ids:
+                    for _, metric_dict in metrics:
+                        # 해당 시간에 데이터가 없을 경우를 대비하여 0으로 처리
+                        value = metric_dict.get(sat_id, [])
+                        row.append(value[i] if i < len(value) else 0)
+                row.append(self.numberUEWaitingResponse[i] if i < len(self.numberUEWaitingResponse) else 0)
+                writer.writerow(row)
 
     def draw(self):
         # plot
