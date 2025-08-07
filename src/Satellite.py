@@ -154,7 +154,7 @@ class Satellite(Base):
                         "ueid": ueid # 대상 UE ID 설정
                     }
                     
-                    # for now, just random. TODO
+                    # TODO for now, just random
                     """ 
                     현 단계: target 위성 랜덤 선택
                     향후 추진: 핸드오버 조건식에 대한 판별 구현 필요 

@@ -1,19 +1,17 @@
 import math
 import simpy
-import json # [추가] JSON 모듈을 사용하기 위해 추가
+import json # [추가] JSON 모듈
 from Base import *
 from config import *
 
-# # [추가] RSRP 계산에 필요한 유틸리티 함수
-# # utils.py에 넣어도 되지만, 편의를 위해 여기에 직접 추가합니다.
-# def calculate_rsrp(distance_km, tx_power_dbm, freq_mhz, sat_gain_dbi, ue_gain_dbi):
-#     """거리를 기반으로 RSRP를 계산하는 함수 (단위: dBm)"""
-#     if distance_km == 0:
-#         return tx_power_dbm # 거리가 0이면 최대 전력으로 간주
-#     # 자유 공간 경로 손실 (FSPL) 계산
-#     fspl = 20 * math.log10(distance_km) + 20 * math.log10(freq_mhz) + 32.45
-#     rsrp = tx_power_dbm + sat_gain_dbi + ue_gain_dbi - fspl
-#     return rsrp
+"""
+[UE State]
+ACTIVE:                                         위성 연결, 정상 작동 상태
+WAITING_RRC_CONFIGURATION:                      Serving 위성으로부터 HO COMMAND 대기 상태
+RRC_CONFIGURED:                                 HO COMMAND 수신함, Target 위성과 연결을 시작하는 상태
+WAITING_RRC_RECONFIGURATION_COMPLETE_RESOPNSE:  RRCRC 대기상태
+INACITVE:                                       연결 없음
+"""
 
 class UE(Base):
     def __init__(self,
@@ -33,6 +31,7 @@ class UE(Base):
                       satellite_ground_delay=satellite_ground_delay,
                       object_type="UE")
 
+        # UE 고유 속성 설정 - 초기 serving 위성
         self.serving_satellite = serving_satellite
 
         # Logic Initialization
@@ -40,8 +39,8 @@ class UE(Base):
 
         self.messageQ = simpy.Store(env)
         self.cpus = simpy.Resource(env, UE_CPU)
-        self.state = ACTIVE
-        self.satellites = None
+        self.state = ACTIVE # 초기 상태: ACTIVE
+        self.satellites = None 
 
         self.previous_serving_sat_id = None
         self.targetID = None
@@ -52,7 +51,10 @@ class UE(Base):
         env.process(self.handle_messages())
         env.process(self.action_monitor())
 
+
     # =================== UE functions ======================
+    # handle messages: satellite와 동일
+    # 수신 메시지의 종류를 구분하거나, 처리 카운팅을 하는 것에 대해 구분되지 않음: UE에게는 그정도로 필요가 없음
     def handle_messages(self):
         while True:
             msg = yield self.messageQ.get()
@@ -63,80 +65,104 @@ class UE(Base):
     def cpu_processing(self, msg):
         with self.cpus.request() as request:
             task = msg['task']
+            
+            # Message Type: HO COMMAND
+            # CURRENT UE STATE: WAITING_RRC_CONFIGURATION
             if task == HO_COMMAND:
-                yield request
-                satid = msg['from']
-                # TODO one error raised for serveing satellite is none
-                # TODO the suspect reason is synchronization issue with "switch to inactive"
-                # TODO Note that the UE didn't wait for the latest response for retransmission.
+                yield request # 대기
+                satid = msg['from'] # Satellite ID CHECK
+                
+                # FIXME one error raised for serveing satellite is none, the suspect reason is synchronization issue with "switch to inactive"
+                # Note that the UE didn't wait for the latest response for retransmission.
+                # 명령 처리 중 연결이 끊켜 self.serving_satellite가 제거되는 경우, 문제가 발생할 수 있는 단계
+                
+                # WAITING_RRC_CONFIGURATION (HO CMD 대기상태) + 메시지 발신 위성이 기존 서빙 위성과 동일
                 if self.state == WAITING_RRC_CONFIGURATION and satid == self.serving_satellite.identity:
-                    # get candidate target
-                    targets = msg['targets']
+                    targets = msg['targets'] # candidate satellite list
+                    
                     # choose target
+                    # TODO 최종 위성을 리스트의 첫번째 위성으로 선택 중 (현단계)
                     self.targetID = targets[0]
-                    self.state = RRC_CONFIGURED # RRC CONFIGURED 상태로 변경 (HO COMMAND 수신 후, UE의 RRC 구성 완료 단계)
-                    self.previous_serving_sat_id = self.serving_satellite.identity
-                    self.retransmit_counter = 0
-                    print(f"{self.type} {self.identity} receives the configuration at {self.env.now}")
+                    
+                    self.state = RRC_CONFIGURED # State Change
+                    self.previous_serving_sat_id = self.serving_satellite.identity # 이전 서빙 위성 ID 보관
+                    self.retransmit_counter = 0 # 재전송 횟수 초기화
+                    print(f"{self.type} {self.identity} receives the configuration at {self.env.now}") # Logging
+                    
+                    # 현재 시간, HO 성공 여부 기록
                     self.timestamps[-1]['timestamp'].append(self.env.now)
                     self.timestamps[-1]['isSuccess'] = True
+                    
+            # Message Type: RRC RECONFIGURATION COMPLETE RESPONSE 
+            # CURRENT UE STATE: RRC_CONFIGURED
             elif task == RRC_RECONFIGURATION_COMPLETE_RESPONSE:
                 yield request
                 satid = msg['from']
-                satellite = self.satellites[satid]
-                if self.covered_by(satid):
-                    self.serving_satellite = satellite
-                    self.state = ACTIVE
+                satellite = self.satellites[satid] # all Satellite list check
+                
+                # TODO satid가 target cell인지 검증하는 절차가 확인으로 추가가 필요함
+                if self.covered_by(satid): # using coverd_by function
+                    self.serving_satellite = satellite # msg trans. satellite
+                    self.state = ACTIVE # State Change
+                    self.timestamps[-1]['timestamp'].append(self.env.now) # Adding: for MIT
                     print(f"{self.type} {self.identity} finished handover at {self.env.now}")
 
+
     # =================== Monitoring Process ======================
-    # UE.py의 action_monitor 메소드는 UE의 상태를 모니터링하고, 필요한 경우 메시지를 전송하는 역할을 수행
-    # action_monitor 메소드의 loop는 주기적으로 send_request_condition() 함수를 호출
-    # send_request_condition() 함수는 UE가 현재 위치에서 RRC 구성 요청을 보낼 수 있는지 여부를 판단 (조건 만족 시, True 반환)
+    # UE 상태를 모니터링, 필요한 경우 메시지를 전송
+    # 주기적으로 send_request_condition() 함수(UE가 현재 위치에서 RRC 구성 요청을 보낼 수 있는지 여부를 판단)를 호출
     def action_monitor(self):
         while True:
-            # send measurement report
-            if self.state == ACTIVE and self.send_request_condition(): # UE가 통신상태인 ACTIVE인지, 그리고 핸드오버 조건이 만족하는지 확인
-                candidates = [] # 핸드오버 대상 위성 후보군을 저장할 빈 리스트 생성
-                for satid in self.satellites: # 모든 위성을 순회하며, UE가 커버리지 내 있는 위성들에 대해서 candidates 리스트에 추가
-                    if self.covered_by(satid) and satid != self.serving_satellite.identity: # 조건: 위성 커버리지 내 존재, 접속하고 있는 위성이 아님
+            
+            # --- ACTION: Send Measurement Report --- 
+            if self.state == ACTIVE and self.send_request_condition(): # Condition
+                candidates = []
+                for satid in self.satellites: # 모든 위성 순회
+                    if self.covered_by(satid) and satid != self.serving_satellite.identity: # Condition: in Cover + not Serving Satellite
                         candidates.append(satid)
+                # Prepare Measurement Report message
                 data = {
                     "task": MEASUREMENT_REPORT,
                     "candidate": candidates,
-                } # MEASUREMENT_REPORT 메시지에 후보 위성군 추가
+                }
                 
-                # Simpy 환경 기반으로 메시지를 보내는 작업을 독립적 프로세스로 등록해 실행
+                # Case: Candidate Satellite List Not Empty (at lease 1 over)
                 if len(candidates) != 0:
+                    # Message Send Protocol Start
                     self.env.process(
                         self.send_message(
-                            delay=self.satellite_ground_delay, # 지연시간
-                            msg=data, # 상기 data 딕셔너리: 메시지는 MEASUREMENT_REPORT이며, 후보 위성 목록이 존재
-                            Q=self.serving_satellite.messageQ, # 메시지 수신 대상의 메지시 Queue를 지정 (serving_satellite의 messageQ)
-                            to=self.serving_satellite # 메시지 수신 대상 (serving_satellite)
+                            delay=self.satellite_ground_delay,
+                            msg=data,
+                            Q=self.serving_satellite.messageQ,
+                            to=self.serving_satellite
                         )
                     )
-                    self.timestamps.append({'timestamp' : [self.env.now]}) # timestamp 리시트에 현 시간 추가
-                    self.timestamps[-1]['from'] = self.serving_satellite.identity # 현재 UE가 접속하고 있는 위성의 ID를 기록
-                    self.timer = self.env.now # 재전송 타이머: 다음 RETRANSMIT 로직에서 해당 시간 기반으로 확인 후 재전송 여부를 결정
-                    self.state = WAITING_RRC_CONFIGURATION # UE 상태를 WAITING_RRC_CONFIGURATION으로 변경
-                    
-            # Retransmit (재전송)
-            if RETRANSMIT and self.state == WAITING_RRC_CONFIGURATION and self.env.now - self.timer > RETRANSMIT_THRESHOLD and self.retransmit_counter < MAX_RETRANSMIT:
-                # <조건>
-                # config.py: RETRANSMIT 상태 True (재전송 기능 활성화)
-                # self.state: WAITING_RRC_CONFIGURATION
-                # self.env.now - self.timer: 현재 시간과 마지막 재전송 시각의 차이가 RETRANSMIT_THRESHOLD를 초과
-                # self.retransmit_counter < MAX_RETRANSMIT: 재전송 횟수가 최대 재전송 횟수 미만 (사전 설정: MAX_RETRANSMIT)
+                    self.timestamps.append({'timestamp' : [self.env.now]}) # Logging
+                    self.timestamps[-1]['from'] = self.serving_satellite.identity # Logging
+                    self.timer = self.env.now # RE-TRANSMIT TIMER START
+                    self.state = WAITING_RRC_CONFIGURATION # UE STATE CHANGE
+                                    
+            # --- ACTION: Trigger retransmission if conditions are met ---
+            if RETRANSMIT and self.state == WAITING_RRC_CONFIGURATION \
+            and (self.env.now - self.timer) > RETRANSMIT_THRESHOLD \
+            and self.retransmit_counter < MAX_RETRANSMIT:
+                # NOTE: Retransmission conditions
+                # 1. RETRANSMIT enabled (see config.py)
+                # 2. UE state is WAITING_RRC_CONFIGURATION
+                # 3. Timer exceeded threshold: now - timer > RETRANSMIT_THRESHOLD
+                # 4. Retransmission attempts < MAX_RETRANSMIT
+
+                self.timer = self.env.now # retransmit timer reset
+                self.timestamps[-1]['timestamp'].append(self.env.now) # Logging
+                # NOTE: 현시점 Re-transmit +1회 실시
                 
-                self.timer = self.env.now # 재전송 타이머 (시간) 초기화
-                self.timestamps[-1]['timestamp'].append(self.env.now) # retransmission time
+                # Message Send Restart
                 candidates = []
                 for satid in self.satellites:
                     if self.covered_by(satid) and satid != self.serving_satellite.identity:
                         candidates.append(satid)
                 data = {
-                    "task": RETRANSMISSION,
+                    "task": RETRANSMISSION, # message type은 MR이 아닌 재전송으로 변경
                     "candidate": candidates
                 }
                 if len(candidates) != 0:
@@ -148,17 +174,17 @@ class UE(Base):
                             to=self.serving_satellite
                         )
                     )
-                    self.retransmit_counter += 1
+                    self.retransmit_counter += 1 # counter add
+            
                     
-            # STEP: RANDOM ACCESS
-            if self.state == RRC_CONFIGURED:  # When the UE has the configuration
-                if self.targetID and self.covered_by(self.targetID):  # RA 시도 전, 2가지 점검 실시 (targetID가 존재하는지, 그리고 UE가 타겟 위성 커버리지 내에 있는지)
-                    target = self.satellites[self.targetID] # 전체 위성 중 targetID에 해당하는 위성 객체를 가져옴
+            # --- ACTION: RANDOM ACCESS Procedure --- 
+            if self.state == RRC_CONFIGURED:  # Condition: RRC_CONFIGURED (HO CMD 수신 상태)
+                if self.targetID and self.covered_by(self.targetID): # CHECK
+                    target = self.satellites[self.targetID]
                     data = {
                         "task": RRC_RECONFIGURATION_COMPLETE, # RRC RECONFIGURATION COMPLETE 메시지 생성
-                        "previous_id": self.previous_serving_sat_id, # 이전 서빙 위성 ID를 포함 (target 위성이 source 위성에게 UE Context Release 보낼 때 필요)
+                        "previous_id": self.previous_serving_sat_id, # 이전 서빙 위성 ID를 포함 (for PATH SWITCHING)
                     }
-                    # Target Satellite에게 RRC RECONFIGURATION COMPLETE 메시지 전송
                     self.env.process(
                         self.send_message(
                             delay=self.satellite_ground_delay,
@@ -167,24 +193,23 @@ class UE(Base):
                             to=target
                         )
                     )
-                    # 최종 완료 응답 대기 상태로 변경 (RRC RECONFIGURATION COMPLETE RESPONSE 대기 상태)
-                    self.state = WAITING_RRC_RECONFIGURATION_COMPLETE_RESPONSE
+                    self.state = WAITING_RRC_RECONFIGURATION_COMPLETE_RESPONSE # STATE CHANGE
                     
-            # switch to inactive: UE가 현 서비스 Satellite의 커버리지를 벗어나는 경우
+            # Switch to INACTIVE State
             if self.serving_satellite is not None and self.outside_coverage():
-                print(
-                    f"UE {self.identity} lost connection at time {self.env.now} from satellite {self.serving_satellite.identity}")
-                self.serving_satellite = None
-                # 연결 상실 시, UE가 WAITING_RRC_CONFIGURATION 상태이거나 ACTIVE 상태인 경우는 HO 실패로 간주
-                # RLF와 HOF state 절차로 변경: TODO
+                # TODO: RLF, HOF 등이 발생하는 경우가 outside_coverage()가 되야함
+                print(f"UE {self.identity} lost connection at time {self.env.now} from satellite {self.serving_satellite.identity}") # Logging
+                self.serving_satellite = None # serv_idx none
+                
+                # ACTIVE/HO CMD 대기 상태에서
                 if self.state == ACTIVE or self.state == WAITING_RRC_CONFIGURATION:
                     if self.state == WAITING_RRC_CONFIGURATION:
-                        print(f"UE {self.identity} handover failure at time {self.env.now}")
-                        self.timestamps[-1]['timestamp'].append(self.env.now)
-                        self.timestamps[-1]['isSuccess'] = False
-                    self.state = INACTIVE # 최종적으로 INACTIVE 상태로 변경
-            
-            # SimPy의 구조상, Coorperative 방식으로, 제어권을 내려야 다른 프로세스가 돌아감: 강제 휴식 없이는 action_monitor의 while True 루프가 무한 루프에 빠짐
+                        print(f"UE {self.identity} handover failure at time {self.env.now}") # Logging
+                        self.timestamps[-1]['timestamp'].append(self.env.now) # Logging
+                        self.timestamps[-1]['isSuccess'] = False # Logging
+                    self.state = INACTIVE # STATE CHANGE
+                                
+            # 1ms 대기: 1회의 action_monitor 이후, 제어권 인계 (1ms 주기의 모니터링 주기)
             yield self.env.timeout(1)
             
 
@@ -196,6 +221,7 @@ class UE(Base):
                 (self.position_y - satellite.position_y) ** 2)) 
         return d <= SATELLITE_R # Ture/False 반환
 
+    # 전체 위성 군 중, Request가 가능한 위성 탐색
     def send_request_condition(self):
         p = (self.position_x, self.position_y) # UE의 현재 위치 p 변수에 저장
         d1_serve = math.dist(p, (self.serving_satellite.position_x, self.serving_satellite.position_y)) # d1_serve 변수에 현재 UE와 서비스 중인 위성 간의 거리 저장
@@ -209,8 +235,21 @@ class UE(Base):
                 return True
         return False
 
+    # TODO: RLF를 기반으로 outside_coverage를 구성해야함 (단순 영역을 벗어나는 것이 아님)
     def outside_coverage(self):
         p = (self.position_x, self.position_y)
         d1_serve = math.dist(p, (self.serving_satellite.position_x, self.serving_satellite.position_y))
         # TODO We may want to remove the second condition someday...
         return d1_serve >= SATELLITE_R and self.position_x < self.serving_satellite.position_x
+
+    
+# # [추가] RSRP 계산에 필요한 유틸리티 함수
+# # utils.py에 넣어도 되지만, 편의를 위해 여기에 직접 추가합니다.
+# def calculate_rsrp(distance_km, tx_power_dbm, freq_mhz, sat_gain_dbi, ue_gain_dbi):
+#     """거리를 기반으로 RSRP를 계산하는 함수 (단위: dBm)"""
+#     if distance_km == 0:
+#         return tx_power_dbm # 거리가 0이면 최대 전력으로 간주
+#     # 자유 공간 경로 손실 (FSPL) 계산
+#     fspl = 20 * math.log10(distance_km) + 20 * math.log10(freq_mhz) + 32.45
+#     rsrp = tx_power_dbm + sat_gain_dbi + ue_gain_dbi - fspl
+#     return rsrp
