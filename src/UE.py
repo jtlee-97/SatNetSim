@@ -317,13 +317,11 @@ class UE(Base):
         # 지상에서의 2D 거리 (dx, dy)와 고도 차이(dz)를 이용해 3D 직선 거리를 계산합니다.
         dx = self.position_x - satellite.position_x
         dy = self.position_y - satellite.position_y
-        # UE의 고도는 0으로 가정합니다.
-        dz = SC9_SATELLITE_ALTITUDE - 0
+        dz = SC9_HANDHELD_ALTITUDE - SC9_SATELLITE_ALTITUDE
         
-        slant_distance = math.sqrt(dx**2 + dy**2 + dz**2)
+        slant_distance = math.sqrt(dx**2 + dy**2 + dz**2) # SATELLITE-UE 3D Distance
 
         # --- 2. 고도각 (Elevation Angle) 계산 ---
-        # MATLAB의 GET_UV_ELEV.m 코드를 Python으로 변환한 것입니다.
         # 지구 중심, UE, 위성이 이루는 삼각형에 사인 법칙을 적용한 공식입니다.
         try:
             # asin의 입력값은 -1과 1 사이여야 하므로, 부동소수점 오류 방지를 위해 clamp 처리
@@ -336,13 +334,9 @@ class UE(Base):
         # --- 3. 안테나 각도 (Antenna Angle / Off-boresight Angle) 계산 ---
         # 위성 안테나의 중심(Boresight, Nadir)에서 UE가 얼마나 벗어나 있는지를 나타내는 각도입니다.
         try:
-            # acos의 입력값은 -1과 1 사이여야 하므로, clamp 처리
-            arg = SC9_SATELLITE_ALTITUDE / slant_distance
-            arg = max(-1.0, min(1.0, arg))
-            antenna_angle = math.degrees(math.acos(arg))
-            # 또는 atan2를 이용하는 더 안정적인 방법:
-            # horizontal_distance = math.sqrt(dx**2 + dy**2)
-            # antenna_angle = math.degrees(math.atan2(horizontal_distance, SC9_SATELLITE_ALTITUDE))
+            # atan2는 acos에 비해 수치적으로 더 안정적이며 입력값 범위를 제한할 필요가 없습니다.
+            horizontal_distance = math.sqrt(dx**2 + dy**2)
+            antenna_angle = math.degrees(math.atan2(horizontal_distance, abs(dz)))
         except ValueError:
             antenna_angle = 90 # 계산 불가능한 경우
 
