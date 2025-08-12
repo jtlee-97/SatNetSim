@@ -2,10 +2,10 @@ import math
 
 # NOTE: SIMULATION CONFIG
 SEED = 10 # Random Seed
-DURATION = 20000 # [ms]
+DURATION = 10000 # [ms]
 
 # NOTE: ENTITIES CONFIG
-NUMBER_UE = 100 # UE 단말 수
+NUMBER_UE = 1 # UE 단말 수
 SATELLITE_R = 25 * 1000 # 위성 커버리지 반경 (m)
 SATELLITE_V = 7.56 * 1000 # 위성 이동속도 (m/s)
 
@@ -24,7 +24,7 @@ QUEUED_SIZE = 500 # Satellite messageQ 최대 크기
 SATELLITE_CPU = 4 # Satellite CPU 리소스 수
 UE_CPU = 4 # UE CPU 리소스 수
 
-# CHECK
+# TODO: CHECK
 GROUP_AREA_L = 1 * 1000 # This is to compare with group handover
 
 # NOTE: Initial Position of Satellites
@@ -32,9 +32,9 @@ GROUP_AREA_L = 1 * 1000 # This is to compare with group handover
 HORIZONTAL_DISTANCE = 1.25 * SATELLITE_R # 위성 간 수평거리 (1.25 * 위성 반경)
 VERTICAL_DISTANCE = 1.25 * SATELLITE_R # 위성간 수직거리 (1.25 * 위성 반경)
 POS_SATELLITES = {
-     1: (-2*SATELLITE_R, 0),
-     2: (-2*SATELLITE_R - HORIZONTAL_DISTANCE , 0),
-     3: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, 0),
+    1: (-2*SATELLITE_R, 0),
+    2: (-2*SATELLITE_R - HORIZONTAL_DISTANCE , 0),
+    # 3: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, 0),
     # 4: (-2*SATELLITE_R, VERTICAL_DISTANCE),
     # 5: (-2*SATELLITE_R - HORIZONTAL_DISTANCE, VERTICAL_DISTANCE),
     # 6: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, VERTICAL_DISTANCE),
@@ -42,6 +42,7 @@ POS_SATELLITES = {
     # 8: (-2*SATELLITE_R - HORIZONTAL_DISTANCE, -VERTICAL_DISTANCE),
     # 9: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, -VERTICAL_DISTANCE),
  }
+
 
 # NOTE: MESSAGE TYPE DEFINITION
 MEASUREMENT_REPORT = "MEASUREMENT_REPORT"
@@ -74,6 +75,10 @@ PROCESSING_TIME = {
     # decryption: 0.1 ms (복호화)
     # logic: 0.05 ms (로직처리)
     # hash: 0.05 ms (해쉬)
+
+# NOTE: Process Interval
+GEOMETRY_UPDATE_INTERVAL = 100 # UE의 기하정보 수집 주기[ms]
+
 
 # NOTE: UE STATE DEFINITION
 ACTIVE = "ACTIVE"
@@ -119,10 +124,17 @@ SC9_HANDHELD_TXPW_dBm = 23                 # Handheld(UE) Tx Power (dBm)
 A3_OFFSET = 3  # Event A3 트리거 오프셋 (dB)
 TIME_TO_TRIGGER = 0.04 # 트리거 유지 시간 (40ms)
 
+# -- Channel Model ---
+ENVIRONMENT_TYPE = 'RURAL' 
+RURAL_LOS_PROB = [78.2, 86.9, 91.9, 92.9, 93.5, 94.0, 94.9, 95.2, 99.8] # LoS 확률 (%)
+RURAL_LOS_SHADOW_STD = [1.79, 1.14, 1.14, 0.92, 1.42, 1.56, 0.85, 0.72, 0.72] # LoS 섀도잉 표준편차 (dB)
+RURAL_NLOS_SHADOW_STD = [8.93, 9.08, 8.78, 10.25, 10.56, 10.74, 10.17, 11.52, 11.52] # NLoS 섀도잉 표준편차 (dB)
+RURAL_NLOS_CLUTTER_LOSS = [19.52, 18.17, 18.42, 18.28, 18.63, 17.68, 16.50, 16.30, 16.30] # NLoS 클러터 손실 (dB)
 
 
-
-
+# -- RSRP Test --
+NUM_RESOURCE_BLOCKS = 100  # 20MHz 대역폭 기준 RB 개수
+REFERENCE_SIGNAL_FACTOR = 6   # MATLAB 코드 기준 Reference Signal Factor
 
 
 
