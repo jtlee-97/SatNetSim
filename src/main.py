@@ -218,4 +218,4 @@ data.draw()
 data.save_to_csv(file_path + "/simulation_log.csv")
 
 # Generate Animation
-os.system(f"python src/animation.py {file_path}/graph")
+# os.system(f"python src/animation.py {file_path}/graph")

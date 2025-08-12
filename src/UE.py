@@ -138,7 +138,7 @@ class UE(Base):
     # 주기적으로 send_request_condition() 함수(UE가 현재 위치에서 RRC 구성 요청을 보낼 수 있는지 여부를 판단)를 호출
     def action_monitor(self):
         while True:
-            # --- ACTION: Send Measurement Report --- 
+            # --- ACTION: Send Measurement Report ---
             if self.state == ACTIVE and self.send_request_condition(): # Condition
                 candidates = []
                 for satid in self.satellites: # 모든 위성 순회
@@ -149,9 +149,11 @@ class UE(Base):
                     "task": MEASUREMENT_REPORT,
                     "candidate": candidates,
                 }
-                
+                                
                 # Case: Candidate Satellite List Not Empty (at lease 1 over)
                 if len(candidates) != 0:
+                    # NOTE: [TEST] 기하(거리, 각도 등) 정보 출력용
+                    self.print_geometry_info([self.serving_satellite.identity] + candidates)
                     # Message Send Protocol Start
                     self.env.process(
                         self.send_message(
@@ -201,7 +203,7 @@ class UE(Base):
                     self.retransmit_counter += 1 # counter add
             
                     
-            # --- ACTION: RANDOM ACCESS Procedure --- 
+            # --- ACTION: RANDOM ACCESS Procedure ---
             if self.state == RRC_CONFIGURED:  # Condition: RRC_CONFIGURED (HO CMD 수신 상태)
                 if self.targetID and self.covered_by(self.targetID): # CHECK
                     target = self.satellites[self.targetID]
@@ -218,7 +220,7 @@ class UE(Base):
                     )
                     self.state = WAITING_RRC_ULGRANT # STATE CHANGE
             
-            # # --- ACTION: RANDOM ACCESS Procedure --- 
+            # # --- ACTION: RANDOM ACCESS Procedure ---
             # if self.state == RRC_WAITING_RRC_ULGRANT:  # Condition: RRC_CONFIGURED (HO CMD 수신 상태)
             #     if self.targetID and self.covered_by(self.targetID): # CHECK
             #         target = self.satellites[self.targetID]
@@ -271,7 +273,7 @@ class UE(Base):
             yield self.env.timeout(1)
             
 
-    # ==================== Utils (Not related to Simpy) ==============
+    # ==================== Utils (Not related to Simpy) =============
     def covered_by(self, satelliteID): # UE가 특정 위성 커버리지 내에 있는가 확인하는 함수
         satellite = self.satellites[satelliteID] # satelliteID에 해당하는 위성 객체를 가져옴
         # 두 점 (UE, 위성) 사이의 거리를 피타고라스 정리를 사용하여 계산 (직선거리)
@@ -352,6 +354,23 @@ class UE(Base):
             "antenna_angle": antenna_angle
         }
     
+    def print_geometry_info(self, satellite_ids):
+        """
+        주어진 위성 ID 목록에 대한 기하학적 정보를 계산하고 출력합니다.
+        """
+        if not self.satellites:
+            print(f"--- [UE {self.identity} Geometry Info] Satellites not available. ---")
+            return
+
+        print(f"--- [UE {self.identity} Geometry Info at {self.env.now:.2f}s] ---")
+        for sat_id in satellite_ids:
+            if sat_id in self.satellites:
+                satellite = self.satellites[sat_id]
+                geo_info = self.get_geometry_info(satellite)
+                print(f"  Satellite {sat_id}:\n    - Slant Distance: {geo_info['distance']:.2f} m\n    - Elevation Angle: {geo_info['elevation_angle']:.2f} degrees\n    - Antenna Angle: {geo_info['antenna_angle']:.2f} degrees")
+            else:
+                print(f"  Satellite {sat_id}: Not available.")
+        print("----------------------------------------------------")
     
 # # [추가] RSRP 계산에 필요한 유틸리티 함수
 # # utils.py에 넣어도 되지만, 편의를 위해 여기에 직접 추가합니다.

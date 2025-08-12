@@ -1,4 +1,5 @@
 #!/bin/bash
+cd "$(dirname "$0")"
 mkdir -p "res"
 for cpu in 8 16 32 64 128 256 512; do
     for delay in 1 5 10 15 20 25 30; do
