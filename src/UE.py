@@ -53,15 +53,15 @@ class UE(Base):
 
         # Running Process
         env.process(self.init())
-        env.process(self.handle_messages())
-        env.process(self.monitor_action())
-        env.process(self.monitor_geometry())
+        env.process(self.MESSAGE_CONTROL())
+        env.process(self.ACTION_MONITOR())
+        env.process(self.GEOMETRY_MONITOR())
 
 
     # =================== UE functions ======================
     # handle messages: satellite와 동일
     # 수신 메시지의 종류를 구분하거나, 처리 카운팅을 하는 것에 대해 구분되지 않음: UE에게는 그정도로 필요가 없음
-    def handle_messages(self):
+    def MESSAGE_CONTROL(self):
         while True:
             msg = yield self.messageQ.get()
             print(f"{self.type} {self.identity} start handling msg:{msg} at time {self.env.now}")
@@ -125,72 +125,95 @@ class UE(Base):
                     print('Send RRC_RECONFIGURATION_COMPLETE message')
 
     # =================== Monitoring Process ======================   
-    def monitor_geometry(self):
+    def GEOMETRY_MONITOR(self):
         # GEOMETRY_UPDATE_INTERVAL 마다 'for satid in self.satellites (전위성 순회)'
         # covered_by 필터링 후, get_geometry_info > geometry_data_cache 생성
         while True:
-            # self.satellites가 초기화될 때까지 대기
             if not self.satellites:
                 yield self.env.timeout(10)
                 continue
 
-            # 커버리지 내에 있는 모든 위성에 대해 정보 업데이트
-            covered_satellites = [sat_id for sat_id in self.satellites if self.covered_by(sat_id)]
+            # 1. 정밀 탐색 대상 위성 목록 필터링 (50km 반경)
+            covered_sat_ids = [sat_id for sat_id in self.satellites if self.covered_by(sat_id)]
             
-            for sat_id in covered_satellites:
+            # 임시 저장소: 이번 타임스텝에 계산된 모든 RSRP 값을 보관
+            all_rsrps_in_scope = {}
+
+            # 2. 모든 탐색 대상 위성에 대해 RSRP 우선 계산
+            for sat_id in covered_sat_ids:
                 satellite = self.satellites[sat_id]
                 
-                # 1. 기본 기하 정보 계산 (좌표 포함)
                 geo_info = self.get_geometry_info(satellite)
                 geo_info['ue_coords'] = (self.position_x, self.position_y)
                 geo_info['sat_coords'] = (satellite.position_x, satellite.position_y)
                 
-                # 2. 모든 채널 정보 상세 계산 (RSRP 및 중간값들이 담긴 딕셔너리 반환)
                 channel_details = self.calculate_rsrp(geo_info)
                 
-                # 3. [핵심] 기하 정보와 채널 상세 정보를 병합하여 최종 보고서(캐시) 생성
-                # Python 3.5+의 딕셔너리 언패킹(unpacking)을 사용하여 두 딕셔너리를 합칩니다.
-                final_cache_entry = {**geo_info, **channel_details}
+                final_entry = {**geo_info, **channel_details}
+                self.geometry_data_cache[sat_id] = final_entry
+                all_rsrps_in_scope[sat_id] = final_entry['rsrp']
+
+            # 3. 계산된 RSRP들을 바탕으로 각 위성의 SINR 계산 및 캐시 업데이트
+            for sat_id in covered_sat_ids:
+                # '신호'는 현재 위성의 RSRP
+                signal_rsrp = all_rsrps_in_scope[sat_id]
                 
-                # 4. 최종 통합 정보를 캐시에 저장
-                self.geometry_data_cache[sat_id] = final_cache_entry
+                # '간섭'은 현재 위성을 제외한 나머지 모든 위성들의 RSRP 리스트
+                interference_list = [rsrp for other_id, rsrp in all_rsrps_in_scope.items() if other_id != sat_id]
                 
-            # 정의된 시간 간격만큼 대기
+                # SINR 계산
+                sinr, noise = self._calculate_sinr(signal_rsrp, interference_list)
+                
+                # 계산된 SINR을 캐시에 추가
+                self.geometry_data_cache[sat_id]['sinr'] = sinr
+                self.geometry_data_cache[sat_id]['noise'] = noise
+                
             yield self.env.timeout(GEOMETRY_UPDATE_INTERVAL)
+    
     
     # cache 기반, 1ms 마다 행동하지만, geometry_data_cache를 기반으로 수행 (messageQ 처리로 1ms 주기 동작은 필요)
     # 보고서 기반 send_request_condition을 통해 measurement trigger를 판단
-    def monitor_action(self):
+    def ACTION_MONITOR(self):
         while True:
             # --- ACTION: Send Measurement Report ---
-            if self.state == ACTIVE and self.send_request_condition(): # Condition               
-                candidates = []
+            # --- 서빙 위성 제외, 후보셀들에 대해서만 판별
+            if self.state == ACTIVE and self.send_request_condition_A3(): # Condition               
+                candidate_measurements = []
+                for sat_id, cached_info in self.geometry_data_cache.items():
+                    if sat_id == self.serving_satellite.identity:
+                        continue  # 서빙 위성은 후보가 아니므로 제외
                 
-                # Candidate에 
-                for satid in self.geometry_data_cache:
-                    if satid != self.serving_satellite.identity:
-                        candidates.append(satid)
-                
-                # # NOTE: Previous code
-                # for satid in self.satellites: # 모든 위성 순회
-                #     if self.covered_by(satid) and satid != self.serving_satellite.identity: # Condition: in Cover + not Serving Satellite
-                #         candidates.append(satid)
-                                                
-                # Prepare Measurement Report message
-                data = {
-                    "task": MEASUREMENT_REPORT,
-                    "candidate": candidates,
-                }
-                
+                # 보고서에 포함할 측정 정보 딕셔너리 생성
+                    measurement_entry = {
+                        "id": sat_id,
+                        "ue_coords": cached_info['ue_coords'],
+                        "sat_coords": cached_info['sat_coords'],
+                        "distance": cached_info['distance'],
+                        "elevation_angle": cached_info['elevation_angle'],
+                        "antenna_angle": cached_info['antenna_angle'],
+                        "rsrp": cached_info['rsrp'],
+                        "sinr": cached_info.get('sinr', -999) # 안전을 위해 .get() 사용
+                    }
+                    candidate_measurements.append(measurement_entry)
+               
                 # Case: Candidate Satellite List Not Empty (at lease 1 over)
-                if len(candidates) != 0:
-                    # NOTE: Previous check code (delete) 
-                    # self.print_geometry_info([self.serving_satellite.identity] + candidates)
+                if len(candidate_measurements) > 0:
+                    # Prepare Measurement Report message
+                    data = {
+                        "task": MEASUREMENT_REPORT,
+                        "candidate_measurements": candidate_measurements,
+                    }
                     
-                    # NOTE: [TEST] 기하(거리, 각도 등) 정보 출력용 (monitor_geometry process를 통한 cache 기반 로그)
+                    # 전송 메시지 정보 출력
+                    print(f"--- [UE {self.identity} sends Measurement Report to Satellite {self.serving_satellite.identity} at {self.env.now:.2f}s] ---")
+                    print(json.dumps(data, indent=4))
+                    print("----------------------------------------------------------")
+                    
+                    # NOTE: [TEST] 기하(거리, 각도 등) 정보 출력용 (GEOMETRY_MONITOR process를 통한 cache 기반 로그)
                     print(f"--- [UE {self.identity} Cached Geometry at {self.env.now:.2f}s] ---")
-                    # 서빙 위성과 후보 위성 ID 목록
-                    ids_to_print = [self.serving_satellite.identity] + candidates
+                    
+                    candidate_ids = [entry['id'] for entry in candidate_measurements]
+                    ids_to_print = [self.serving_satellite.identity] + candidate_ids
                     
                     # NOTE: TRACING: 캐싱 데이터 출력
                     for sat_id in ids_to_print:
@@ -201,9 +224,12 @@ class UE(Base):
                             print(f"   - Geometry  : Dist={cached_info['distance']:.2f}m | Elev={cached_info['elevation_angle']:.2f} degree | Ant_Angle={cached_info['antenna_angle']:.2f} degree")
                             print(f"   - Path Loss : Total={cached_info['basic_path_loss']:.2f}dB (FSPL={cached_info['fspl']:.2f}, LoS Prob={cached_info['los_prob']:.1f}%)")
                             print(f"   - RSRP Comp : TxPwr_RB={cached_info['tx_power_per_rb_dbm']:.2f}dBm | SatGain={cached_info['sat_tx_gain_dbi']:.2f}dBi | UEGain={cached_info['ue_rx_gain_dbi']:.2f}dBi")
-                            print(f"   - RSRP Final: {cached_info['rsrp']:.2f} dBm")
-                        else:
-                            print(f"  Satellite {sat_id}: No data in cache.")
+                            if 'sinr' in cached_info:
+                                print(f"   - Quality   : RSRP={cached_info['rsrp']:.2f} dBm | SINR={cached_info['sinr']:.2f} dB")
+                                # [수정] 캐시에 저장된 Noise 값 출력
+                                print(f"   - Noise     : Thermal Noise={cached_info['noise']:.2f} dBm")
+                            else:
+                                print(f"   - RSRP Final: {cached_info['rsrp']:.2f} dBm")
                     print("----------------------------------------------------------")
                     # --------- TRACING END ---------#
                     
@@ -287,7 +313,7 @@ class UE(Base):
                         self.timestamps[-1]['isSuccess'] = False # Logging
                     self.state = INACTIVE # STATE CHANGE
                                 
-            # 1ms 대기: 1회의 monitor_action 이후, 제어권 인계 (1ms 주기의 모니터링 주기)
+            # 1ms 대기: 1회의 ACTION_MONITOR 이후, 제어권 인계 (1ms 주기의 모니터링 주기)
             yield self.env.timeout(1)
             
 
@@ -299,48 +325,28 @@ class UE(Base):
         d = math.sqrt(((self.position_x - satellite.position_x) ** 2) +
                     ((self.position_y - satellite.position_y) ** 2))
         return d <= 50000 # 50 km 반경 (약 1-tiers)
-    
-    # -- Previous 'covered_by' code (25.08.12) --
-    # def covered_by(self, satelliteID): # UE가 특정 위성 커버리지 내에 있는가 확인하는 함수
-    #     # TODO: 필터링 대상 (주변 1-tiers 셀만 서칭하도록 수정 필요)
-    #     satellite = self.satellites[satelliteID] # satelliteID에 해당하는 위성 객체를 가져옴
-    #     # 두 점 (UE, 위성) 사이의 거리를 피타고라스 정리를 사용하여 계산 (직선거리)
-    #     d = math.sqrt(((self.position_x - satellite.position_x) ** 2) + (
-    #             (self.position_y - satellite.position_y) ** 2)) 
-    #     return d <= SATELLITE_R # Ture/False 반환
 
-    # ----------------------------------------------
-    # 전체 위성 군 중, Request가 가능한 위성 탐색
-    # Measurement Trigger (preparation event)가 추가되어야 하는 위치
-    def send_request_condition(self):
-        # 캐시에 서빙 위성 정보가 없으면 False 반환
+    def send_request_condition_A3(self):
+        # 서빙 위성 정보가 캐시에 없으면 결정 불가
         if self.serving_satellite.identity not in self.geometry_data_cache:
             return False
-        # 캐시에서 서빙 위성과의 거리를 가져옴
-        d1_serve = self.geometry_data_cache[self.serving_satellite.identity]['distance']
-        # 다른 위성들도 캐시에서 거리 정보를 가져와 비교
-        for satid, geo_info in self.geometry_data_cache.items():
+            
+        # 캐시에서 서빙 위성의 SINR 값을 가져옴
+        sinr_serving = self.geometry_data_cache[self.serving_satellite.identity]['sinr']
+
+        # 다른 위성들(이웃 위성)의 SINR과 비교
+        for satid, cached_info in self.geometry_data_cache.items():
             if satid == self.serving_satellite.identity:
                 continue
-            d_neighbor = geo_info['distance']
-            # 캐시된 데이터를 기반으로 핸드over 여부 결정
-            if d_neighbor + 100 < d1_serve:
-                return True  
+            
+            sinr_neighbor = cached_info['sinr']
+            
+            # A3 event: 이웃 위성의 SINR이 서빙 위성보다 일정 수준(A3_OFFSET) 이상 강해지면 True 반환
+            if sinr_neighbor > sinr_serving + A3_OFFSET:
+                print(f"Handover Triggered: Neighbor {satid} (SINR {sinr_neighbor:.2f} dB) > Serving {self.serving_satellite.identity} (SINR {sinr_serving:.2f} dB)")
+                return True
+                
         return False
-    
-    # # 전체 위성 군 중, Request가 가능한 위성 탐색
-    # def send_request_condition(self):
-    #     p = (self.position_x, self.position_y) # UE의 현재 위치 p 변수에 저장
-    #     d1_serve = math.dist(p, (self.serving_satellite.position_x, self.serving_satellite.position_y)) # d1_serve 변수에 현재 UE와 서비스 중인 위성 간의 거리 저장
-    #     for satid in self.satellites: # 모든 위성을 히나씩 순회하며 검사 시작
-    #         satellite = self.satellites[satid] # 현재 순회 대상이된 위성 객체 전체를 satellite 변수에 저장
-    #         d = math.dist(p, (satellite.position_x, satellite.position_y)) # 순회 대상 위성 객체와 현재 UE 간의 거리 계산
-    #         # 조건문 실행 (타겟 위성 검토)
-    #         # 이웃 위성까지의 거리 d가 현재 서빙 위성거라 d1_serve보다 100미터 이상 작을 경우, True 반환
-    #         # 100 미터는 offset으로 적용된 값으로, 이웃 위성까지의 거리와 현재 서빙 위성까지의 거리가 충분히 멀어야 한다는 의미 (PP 방지)
-    #         if d + 100 < d1_serve:
-    #             return True
-    #     return False
 
     # TODO: RLF를 기반으로 outside_coverage를 구성해야함 (단순 영역을 벗어나는 것이 아님)
     def outside_coverage(self):
@@ -487,6 +493,24 @@ class UE(Base):
         
         return path_loss_details
 
+        # SC9_HANDHELD_NOISE_FIGURE
+
+    def _calculate_sinr(self, signal_rsrp_dbm, interference_rsrp_list_dbm):
+        # 1. 신호와 간섭을 선형 스케일(mW)로 변환
+        signal_mw = 10**(signal_rsrp_dbm / 10)
+        total_interference_mw = sum([10**(rsrp / 10) for rsrp in interference_rsrp_list_dbm])
+
+        # 2. [핵심 수정] 잡음 전력을 표준 공식에 따라 동적으로 계산
+        noise_dbm = THERMAL_NOISE_DENSITY + 10 * math.log10(SC9_RB_BANDWIDTH_HZ) + SC9_HANDHELD_NOISE_FIGURE
+        noise_mw = 10**(noise_dbm / 10)
+
+        # 3. SINR 계산
+        sinr_linear = signal_mw / (total_interference_mw + noise_mw)
+        sinr_db = 10 * math.log10(sinr_linear)
+        
+        # 4. [수정] SINR과 함께 계산된 Noise 값도 반환
+        return sinr_db, noise_dbm
+    
     # ==================== Geometry Calculation Functions ======================
     def get_geometry_info(self, satellite):
         # --- 1. 직선 거리 (Slant Distance) 계산 ---
@@ -541,21 +565,25 @@ class UE(Base):
     #         else:
     #             print(f"  Satellite {sat_id}: Not available.")
     #     print("----------------------------------------------------")
-    
 
 
+'''    
+#----------------------------------------------#
+#                                              # 
+#         T  O    D  O    L  I  S  T           #
+#                                              #
+#----------------------------------------------#
 
-#----------------------------------------------
-# TODO
-# 현단계: 
-# 1) 거리, 고각, 안테나 각도 계산 반영
-# 2) 이는 특정 주기마다 수행되도록 하며 캐싱에 저장
-# 3) monitor_action는 캐싱 정보를 기반으로 수행 (특히 Measurement Report에 대해)
-#
-# 다음 단계:
-# 1) 채널 모델을 거리, 고각, 안테나 각도 주기에 맞춰 계산 (완료)
-# 1-1) 검산 과정 필요 (MATLAB으로 교차 검증해볼 것: 2025.08.13. 00:29 / geo_channel_phase1_250813 커밋버전) (완료)
-# 2) 안테나 페턴 함수를 별도로 만들고 이를 여기에 반영시킴 (완료)
-# 3) config.py의 파워, 이득 등을 고려해서 DL에 대한 원신호 계산을 수행 (완료, RSRP까지 검증 끝)
-# 4) 지금까지는 필터링된 위성군에게만 적용해 계산되었으나, Interference 계산을 위해서는 전위성 군에 대한 조건부 스캔 확장 필요
-# 5) 이를 모두 반영해서 RSRP, SNR, SINR 등을 계산할 수 있도록 확장
+<TODO: Measurement>
+1) 거리, 고각, 안각 계산 (주기별, 캐싱 저장) - DONE
+2) 안테나 패턴 구현, 채널 모델 구현 (RSRP) - DONE
+3) 필더링 위성 외 Interference용 주변 위성 스캔 확장 - DONE
+4) SINR/SNR 구현: 위성 필터링 범위, 계산 범위 >> Noise는 수정이 필요할 것으로 보임 - DONE
+5) K-filter 구현
+
+<TODO: protocol>
+1) INACTIVE 시 INITIAL ACCESS
+2) RACH 구체적 구현
+3) ~
+
+'''

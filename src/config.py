@@ -31,18 +31,56 @@ GROUP_AREA_L = 1 * 1000 # This is to compare with group handover
 # TODO: 위성 시나리오에 맞게 수정해야함
 HORIZONTAL_DISTANCE = 1.25 * SATELLITE_R # 위성 간 수평거리 (1.25 * 위성 반경)
 VERTICAL_DISTANCE = 1.25 * SATELLITE_R # 위성간 수직거리 (1.25 * 위성 반경)
-POS_SATELLITES = {
-    1: (-2*SATELLITE_R, 0),
-    2: (-2*SATELLITE_R - HORIZONTAL_DISTANCE , 0),
-    # 3: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, 0),
-    # 4: (-2*SATELLITE_R, VERTICAL_DISTANCE),
-    # 5: (-2*SATELLITE_R - HORIZONTAL_DISTANCE, VERTICAL_DISTANCE),
-    # 6: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, VERTICAL_DISTANCE),
-    # 7: (-2*SATELLITE_R, -VERTICAL_DISTANCE),
-    # 8: (-2*SATELLITE_R - HORIZONTAL_DISTANCE, -VERTICAL_DISTANCE),
-    # 9: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, -VERTICAL_DISTANCE),
- }
+# POS_SATELLITES = {
+#     1: (-2*SATELLITE_R, 0),
+#     2: (-2*SATELLITE_R - HORIZONTAL_DISTANCE , 0),
+#     # 3: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, 0),
+#     # 4: (-2*SATELLITE_R, VERTICAL_DISTANCE),
+#     # 5: (-2*SATELLITE_R - HORIZONTAL_DISTANCE, VERTICAL_DISTANCE),
+#     # 6: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, VERTICAL_DISTANCE),
+#     # 7: (-2*SATELLITE_R, -VERTICAL_DISTANCE),
+#     # 8: (-2*SATELLITE_R - HORIZONTAL_DISTANCE, -VERTICAL_DISTANCE),
+#     # 9: (-2*SATELLITE_R - 2*HORIZONTAL_DISTANCE, -VERTICAL_DISTANCE),
+#  }
 
+def generate_satellite_positions(radius, tiers):
+    """
+    [수정됨] MATLAB 코드를 기반으로, 육각형 셀 구조의 위성 좌표를 자동 생성합니다.
+    
+    Args:
+        radius (float): 위성 커버리지 반경 (SATELLITE_R)
+        tiers (int): 생성할 위성 링(tier)의 수
+        
+    Returns:
+        dict: {id: (x, y)} 형태의 위성 좌표 딕셔너리
+    """
+    coords = [(0, 0)]  # 중심 위성 좌표
+    
+    # MATLAB의 for 루프 로직을 그대로 변환
+    for tier in range(1, tiers + 1):
+        for side in range(6):
+            for step in range(tier):
+                angle = math.radians(side * 60 + 30) # 60도씩 회전, 30도 오프셋
+                
+                # MATLAB의 핵심 계산 공식 Python 변환
+                dx = radius * math.sqrt(3) * (tier * math.cos(angle) - step * math.sin(angle + math.pi / 6))
+                dy = radius * math.sqrt(3) * (tier * math.sin(angle) + step * math.cos(angle + math.pi / 6))
+                
+                coords.append((dx, dy))
+
+    # 중복 좌표를 제거하고 ID를 부여하여 최종 딕셔너리 생성
+    # 참고: set을 사용하여 부동소수점 오차로 인한 미세한 중복 가능성을 제거
+    unique_coords = sorted(list(set(tuple(map(lambda c: round(c, 5), coord)) for coord in coords)))
+    
+    positions = {i+1: coord for i, coord in enumerate(unique_coords)}
+    
+    return positions
+
+# 2. 생성할 Tier 수 설정
+TIERS = 2  # 예시: 중심 위성 + 2 tiers (총 1+6+12=19개 위성)
+
+# 3. 함수를 호출하여 POS_SATELLITES 딕셔너리 자동 생성
+POS_SATELLITES = generate_satellite_positions(SATELLITE_R, TIERS)
 
 # NOTE: MESSAGE TYPE DEFINITION
 MEASUREMENT_REPORT = "MEASUREMENT_REPORT"
@@ -79,7 +117,6 @@ PROCESSING_TIME = {
 # NOTE: Process Interval
 GEOMETRY_UPDATE_INTERVAL = 100 # UE의 기하정보 수집 주기[ms]
 
-
 # NOTE: UE STATE DEFINITION
 ACTIVE = "ACTIVE"
 WAITING_RRC_CONFIGURATION = "WAITING_RRC_CONFIGURATION"
@@ -97,6 +134,7 @@ EARTH_RADIUS = 6371*1000            # [m]
 # ㄴ Study Case 9: LEO-600 Satellite Parameters
 SC9_CARRIER_FREQUENCY_HZ = 2e9                   # [Hz], DL carrier frequency (2 GHz)
 SC9_BANDWIDTH_HZ = 20e6                          # [Hz], DL bandwidth (20 MHz)
+SC9_RB_BANDWIDTH_HZ = 180000                     # [Hz], Resource Block 당 대역폭 (180 kHz)
 SC9_SATELLITE_EIRP_DENSITY = 34                  # [dBW/MHz], satellite EIRP density
 
 SC9_SATELLITE_TXPW_dBm = SC9_SATELLITE_EIRP_DENSITY + 10 * math.log10(SC9_BANDWIDTH_HZ * 1e-6) # 47.0103 dBm
@@ -121,7 +159,11 @@ SC9_HANDHELD_TXPW_dBm = 23                 # Handheld(UE) Tx Power (dBm)
 
 # --- Handover Trigger Parameters ---
 A3_OFFSET = 3  # Event A3 트리거 오프셋 (dB)
-TIME_TO_TRIGGER = 0.04 # 트리거 유지 시간 (40ms)
+TIME_TO_TRIGGER = 400 # 트리거 유지 시간 (40ms)
+
+# --- Radio Link Checks ---
+THRESHOLD_Q_OUT = -8    # SINR -8 dB
+THRESHOLD_Q_IN = -6     # SINR -6 dB
 
 # -- Channel Model ---
 ENVIRONMENT_TYPE = 'RURAL' 
@@ -131,12 +173,10 @@ RURAL_NLOS_SHADOW_STD = [8.93, 9.08, 8.78, 10.25, 10.56, 10.74, 10.17, 11.52, 11
 RURAL_NLOS_CLUTTER_LOSS = [19.52, 18.17, 18.42, 18.28, 18.63, 17.68, 16.50, 16.30, 16.30] # NLoS 클러터 손실 (dB)
 
 
-# -- RSRP Test --
+# -- RSRP/SINR Test --
 NUM_RESOURCE_BLOCKS = 100  # 20MHz 대역폭 기준 RB 개수
 REFERENCE_SIGNAL_FACTOR = 6   # MATLAB 코드 기준 Reference Signal Factor
-
-
-
+THERMAL_NOISE_DENSITY = -174    # 기준 열잡음 밀도 (dBm/Hz)
 
 
 # ------------------------------------------------------------------------------

@@ -111,13 +111,13 @@ class Satellite(Base):
             if task == MEASUREMENT_REPORT or task == RETRANSMISSION:
                 # Queue 대기 작업이 QUEUED_SIZE 미만인 경우에만 처리
                 if len(self.cpus.queue) < QUEUED_SIZE:
-                    print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now}") # Logging
+                    print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now:.3f}") # Logging
                     self.env.process(self.cpu_processing(msg=data, msg_priority=2)) # Message Processing (priority second)
                 else: # Message Drop
                     self.counter.increment_dropped() # message drop 카운트 증가
-                    print(f"{self.type} {self.identity} dropped msg:{msg} at time {self.env.now}") # Logging
+                    print(f"{self.type} {self.identity} dropped msg:{msg} at time {self.env.now:.3f}") # Logging
             else: # HO ACK, HO Request. RRC RC, AMF Response
-                print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now}") # Logging
+                print(f"{self.type} {self.identity} accepted msg:{msg} at time {self.env.now:.3f}") # Logging
                 self.env.process(self.cpu_processing(msg=data, msg_priority=1)) # Message Processing (priority first)
 
 
@@ -132,13 +132,51 @@ class Satellite(Base):
             yield request # Processing Pause
             
             # Processing Start
-            print(f"{self.type} {self.identity} handling msg:{msg} at time {self.env.now}") # CPU 처리 Logging
+            print(f"{self.type} {self.identity} handling msg:{msg} at time {self.env.now:.3f}") # CPU 처리 Logging
             
             task = msg['task'] # msg 내 task 종류 확인
             processing_time = PROCESSING_TIME[task] # task time (in config.py > PROCESSING_TIME)
 
             # (Serving Satellite) Message Type: MEASUREMENT REPORT / RETRANSMISSION
-            if task == MEASUREMENT_REPORT or task == RETRANSMISSION:
+            if task == MEASUREMENT_REPORT:
+                yield request
+                processing_time = 1  # 메시지 처리 시간 1ms 가정
+                
+                ueid = msg['from']
+                # UE가 보낸 상세 측정 정보 리스트를 가져옵니다.
+                # UE.py에서 "candidate_measurements" 키를 사용했으므로 여기서도 맞춰줍니다.
+                candidate_measurements = msg['candidate_measurements']
+                UE = self.UEs[ueid]
+
+                if self.connected(UE):
+                    yield self.env.timeout(processing_time)
+
+                    if self.connected(UE):
+                        # --- 최적 타겟 선정 로직 시작 ---
+                        best_target_id = -1
+                        best_target_sinr = -float('inf')
+
+                        # UE가 보낸 측정 정보 리스트를 순회하며 SINR이 가장 높은 위성을 찾습니다.
+                        for report in candidate_measurements:
+                            if report['sinr'] > best_target_sinr:
+                                best_target_sinr = report['sinr']
+                                best_target_id = report['id'] # 딕셔너리에서 'id' 값 추출
+                        # --- 최적 타겟 선정 로직 끝 ---
+
+                        if best_target_id != -1:
+                            print(f"--- Satellite {self.identity} chose target {best_target_id} for UE {ueid} (Best SINR: {best_target_sinr:.2f} dB) ---")
+                            target_satellite = self.satellites[best_target_id]
+                            
+                            data = {
+                                "task": HANDOVER_REQUEST,
+                                "ueid": ueid
+                            }
+                            
+                            self.env.process(self.send_message(delay=self.ISL_delay, msg=data, Q=target_satellite.messageQ, to=target_satellite))
+                        else:
+                            print(f"Satellite {self.identity} could not find a suitable HO target for UE {ueid}.")
+            
+            if task == RETRANSMISSION:
                 ueid = msg['from'] # Message를 전송한 UE ID
                 candidates = msg['candidate'] # 핸드오버 후보 위성 목록
                 UE = self.UEs[ueid] # UE ID를 활용해 UE 객체 호출
@@ -279,7 +317,7 @@ class Satellite(Base):
             # Message Type: AMF RESPONSE을 수신 (AMF의 Path Shift 완료)
             elif task == AMF_RESPONSE:
                 yield self.env.timeout(processing_time)
-            print(f"{self.type} {self.identity} finished processing msg:{msg} at time {self.env.now}")
+            print(f"{self.type} {self.identity} finished processing msg:{msg} at time {self.env.now:.3f}")
 
 
     # Continuous updating the object location.

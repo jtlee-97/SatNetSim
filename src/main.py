@@ -23,7 +23,7 @@ if len(sys.argv) != 1: # This is for automation
     # sys.argv[3]: 위성-지상 지연시간
 
 # 결과물 저장 디렉토리 설정 / 오류해결, 실행 시 디렉토리 초기화
-file_path = f"res/{dir}"
+file_path = f"SatNetSim/res/{dir}"
 if os.path.exists(file_path):
     try:
         shutil.rmtree(file_path)
@@ -80,7 +80,7 @@ POSITIONS = utils.generate_points_with_ylim(NUMBER_UE, SATELLITE_R - 100, 0, 0, 
 # This is simply for tracing TIME STAMP in Terminal
 def monitor_timestamp(env):
     while True:
-        print(f"Current simulation time {env.now}", file=sys.stderr)
+        print(f"Simulation Time {env.now:.3f}", file=sys.stderr)
         yield env.timeout(1)
 
 
@@ -99,13 +99,21 @@ def global_stats_collector_draw_middle(env, UEs, satellites, timestep):
                 inactive_positions.append(pos)
             else:
                 requesting_UE_positions.append(pos)
-        satellite_positions = []
-        for s_id in satellites:
-            s = satellites[s_id]
-            satellite_positions.append((s.position_x, s.position_y))
+        satellite_positions = {}
+        for s_id, s in satellites.items():
+            satellite_positions[s_id] = (s.position_x, s.position_y)
+        
+        # [수정] ID 정보가 포함된 딕셔너리를 draw_from_positions 함수로 전달
         utils.draw_from_positions(inactive_positions, active_UE_positions, requesting_UE_positions, env.now,
                                   file_path + "/graph", satellite_positions, SATELLITE_R)
         yield env.timeout(timestep)
+        # satellite_positions = []
+        # for s_id in satellites:
+        #     s = satellites[s_id]
+        #     satellite_positions.append((s.position_x, s.position_y))
+        # utils.draw_from_positions(inactive_positions, active_UE_positions, requesting_UE_positions, env.now,
+        #                           file_path + "/graph", satellite_positions, SATELLITE_R)
+        # yield env.timeout(timestep)
 
 
 # Logging Text: This function collects information but draws(LOG) in the end of the simulation.
@@ -124,7 +132,6 @@ def global_stats_collector_draw_final(env, data, UEs, satellites, timestep):
                 data.cumulative_message_from_satellite[id] = []
                 data.cumulative_message_from_dropped[id] = []
                 data.cumulative_message_from_AMF[id] = []
-
             data.numberUnProcessedMessages[id].append(len(satellite.cpus.queue))
             data.cumulative_total_messages[id].append(counter.total_messages)
             data.cumulative_message_from_UE_measurement[id].append(counter.message_from_UE_measurement)

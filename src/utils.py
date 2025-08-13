@@ -215,15 +215,15 @@ def generate_points_with_ylim(n, R, x, y, ylim):
             points.append((x_, y_))
     return points
 
-
-def draw_from_positions(inactive_positions, active_position, requesting_position, label, dir, satellite_pos, R):
+def draw_from_positions(inactive_positions, active_position, requesting_position, label, dir, satellite_pos_dict, R):
     plt.close('all')
-    plt.clf()
     fig, ax = plt.subplots(figsize=(8, 8))
-    x_range = (-3.0*R, 3.0*R) # 1.2
+    x_range = (-3.0*R, 3.0*R)
     y_range = (-3.0*R, 3.0*R)
     plt.xlim(x_range)
     plt.ylim(y_range)
+    
+    # --- UE 위치 그리기 (기존과 동일) ---
     if len(inactive_positions) != 0:
         x_coords, y_coords = zip(*inactive_positions)
         plt.scatter(x_coords, y_coords, color='red', s=0.5)
@@ -233,22 +233,47 @@ def draw_from_positions(inactive_positions, active_position, requesting_position
     if len(requesting_position) != 0:
         x_coords, y_coords = zip(*requesting_position)
         plt.scatter(x_coords, y_coords, color='green', s=0.5)
-    x_coords, y_coords = zip(*satellite_pos)
-    plt.scatter(x_coords, y_coords, color='black', s=10)
-    for point in satellite_pos:
-        circle = Circle((point[0], point[1]), R, color='black', fill=False, linewidth=0.5)
-        ax.add_patch(circle)
-    plt.savefig(f'{dir}/res_positions_{label}.png', dpi=300, bbox_inches='tight')
+        
+    # --- [수정] 위성 위치 및 ID 그리기 ---
+    if satellite_pos_dict: # 딕셔너리가 비어있지 않은 경우
+        # 1. 딕셔너리의 값(좌표)들만 사용하여 점 찍기
+        x_coords, y_coords = zip(*satellite_pos_dict.values())
+        plt.scatter(x_coords, y_coords, color='black', s=20, marker='s') # 마커를 네모로 변경하여 가시성 확보
 
-# def calculate_rsrp(distance_km, tx_power_dbm, freq_mhz, sat_gain_dbi, ue_gain_dbi):
-#     """
-#     거리를 기반으로 RSRP를 계산하는 함수 (단위: dBm)
-#     """
-#     # 자유 공간 경로 손실 (FSPL) 계산
-#     # FSPL (dB) = 20*log10(d) + 20*log10(f) + 20*log10(4π/c) - G_tx - G_rx
-#     # 여기서는 간단하게 dB 단위로 계산
-#     fspl = 20 * math.log10(distance_km) + 20 * math.log10(freq_mhz) + 32.45
+        # 2. [핵심 추가] 각 위성 위치에 ID 텍스트 추가
+        for sat_id, pos in satellite_pos_dict.items():
+            # pos[0]은 x좌표, pos[1]은 y좌표. 점 바로 위에 텍스트 표시
+            ax.text(pos[0], pos[1] + 0.05 * R, str(sat_id), color='black', fontsize=9, ha='center')
+
+        # 3. 위성 커버리지 원 그리기
+        for point in satellite_pos_dict.values():
+            circle = Circle((point[0], point[1]), R, color='black', fill=False, linewidth=0.5)
+            ax.add_patch(circle)
+            
+    # 파일 이름에 float 대신 int를 사용하도록 수정
+    plt.savefig(f'{dir}/res_positions_{int(label)}.png', dpi=300, bbox_inches='tight')
+    plt.close(fig) # 메모리 누수 방지를 위해 fig 객체를 명시적으로 닫기
     
-#     # RSRP = 송신전력 + 안테나 이득 - 경로손실
-#     rsrp = tx_power_dbm + sat_gain_dbi + ue_gain_dbi - fspl
-#     return rsrp
+# def draw_from_positions(inactive_positions, active_position, requesting_position, label, dir, satellite_pos, R):
+#     plt.close('all')
+#     plt.clf()
+#     fig, ax = plt.subplots(figsize=(8, 8))
+#     x_range = (-3.0*R, 3.0*R) # 1.2
+#     y_range = (-3.0*R, 3.0*R)
+#     plt.xlim(x_range)
+#     plt.ylim(y_range)
+#     if len(inactive_positions) != 0:
+#         x_coords, y_coords = zip(*inactive_positions)
+#         plt.scatter(x_coords, y_coords, color='red', s=0.5)
+#     if len(active_position) != 0:
+#         x_coords, y_coords = zip(*active_position)
+#         plt.scatter(x_coords, y_coords, color='blue', s=0.5)
+#     if len(requesting_position) != 0:
+#         x_coords, y_coords = zip(*requesting_position)
+#         plt.scatter(x_coords, y_coords, color='green', s=0.5)
+#     x_coords, y_coords = zip(*satellite_pos)
+#     plt.scatter(x_coords, y_coords, color='black', s=10)
+#     for point in satellite_pos:
+#         circle = Circle((point[0], point[1]), R, color='black', fill=False, linewidth=0.5)
+#         ax.add_patch(circle)
+#     plt.savefig(f'{dir}/res_positions_{label}.png', dpi=300, bbox_inches='tight')
