@@ -1,6 +1,7 @@
 import math
 import simpy
 import random
+from scipy.special import jv
 import json # [추가] JSON 모듈
 from Base import *
 from config import *
@@ -53,7 +54,7 @@ class UE(Base):
         # Running Process
         env.process(self.init())
         env.process(self.handle_messages())
-        env.process(self.action_monitor())
+        env.process(self.monitor_action())
         env.process(self.monitor_geometry())
 
 
@@ -97,20 +98,6 @@ class UE(Base):
                     # 현재 시간, HO 성공 여부 기록
                     self.timestamps[-1]['timestamp'].append(self.env.now)
                     self.timestamps[-1]['isSuccess'] = True
-                    
-            # # Message Type: RRC RECONFIGURATION COMPLETE RESPONSE 
-            # # CURRENT UE STATE: RRC_CONFIGURED
-            # elif task == RRC_RECONFIGURATION_COMPLETE_RESPONSE:
-            #     yield request
-            #     satid = msg['from']
-            #     satellite = self.satellites[satid] # all Satellite list check
-                
-            #     # TODO satid가 target cell인지 검증하는 절차가 확인으로 추가가 필요함
-            #     if self.covered_by(satid): # using coverd_by function
-            #         self.serving_satellite = satellite # msg trans. satellite
-            #         self.state = ACTIVE # State Change
-            #         self.timestamps[-1]['timestamp'].append(self.env.now) # Adding: for MIT
-            #         print(f"{self.type} {self.identity} finished handover at {self.env.now}")
             
             elif task == RRC_ULGRANT:
                 yield request
@@ -137,17 +124,10 @@ class UE(Base):
                     )
                     print('Send RRC_RECONFIGURATION_COMPLETE message')
 
-    # =================== Monitoring Process ======================
-    # UE 상태를 모니터링, 필요한 경우 메시지를 전송
-    # 주기적으로 send_request_condition() 함수(UE가 현재 위치에서 RRC 구성 요청을 보낼 수 있는지 여부를 판단)를 호출
-    
+    # =================== Monitoring Process ======================   
     def monitor_geometry(self):
         # GEOMETRY_UPDATE_INTERVAL 마다 'for satid in self.satellites (전위성 순회)'
         # covered_by 필터링 후, get_geometry_info > geometry_data_cache 생성
-        """
-        [신규] 주기적으로 커버리지 내 위성들의 기하 정보를 계산하고 캐시에 저장합니다.
-        향후 이 프로세스에서 RSRP 등 채널 품질 계산 로직이 추가됩니다.
-        """
         while True:
             # self.satellites가 초기화될 때까지 대기
             if not self.satellites:
@@ -159,27 +139,28 @@ class UE(Base):
             
             for sat_id in covered_satellites:
                 satellite = self.satellites[sat_id]
-                # 1. 기하 정보 계산
+                
+                # 1. 기본 기하 정보 계산 (좌표 포함)
                 geo_info = self.get_geometry_info(satellite)
                 geo_info['ue_coords'] = (self.position_x, self.position_y)
                 geo_info['sat_coords'] = (satellite.position_x, satellite.position_y)
                 
-                # 2. RSRP 계산
-                rsrp_dbm = self.calculate_rsrp(geo_info)
+                # 2. 모든 채널 정보 상세 계산 (RSRP 및 중간값들이 담긴 딕셔너리 반환)
+                channel_details = self.calculate_rsrp(geo_info)
                 
-                # TODO: 추후 SINR 등 추가 예정
-                # ~
+                # 3. [핵심] 기하 정보와 채널 상세 정보를 병합하여 최종 보고서(캐시) 생성
+                # Python 3.5+의 딕셔너리 언패킹(unpacking)을 사용하여 두 딕셔너리를 합칩니다.
+                final_cache_entry = {**geo_info, **channel_details}
                 
-                # FIN: 캐시에 저장
-                geo_info['rsrp'] = rsrp_dbm
-                self.geometry_data_cache[sat_id] = geo_info
+                # 4. 최종 통합 정보를 캐시에 저장
+                self.geometry_data_cache[sat_id] = final_cache_entry
                 
-            # 정의된 시간 간격만큼 대기 (예: 100ms)
+            # 정의된 시간 간격만큼 대기
             yield self.env.timeout(GEOMETRY_UPDATE_INTERVAL)
     
     # cache 기반, 1ms 마다 행동하지만, geometry_data_cache를 기반으로 수행 (messageQ 처리로 1ms 주기 동작은 필요)
     # 보고서 기반 send_request_condition을 통해 measurement trigger를 판단
-    def action_monitor(self):
+    def monitor_action(self):
         while True:
             # --- ACTION: Send Measurement Report ---
             if self.state == ACTIVE and self.send_request_condition(): # Condition               
@@ -190,10 +171,10 @@ class UE(Base):
                     if satid != self.serving_satellite.identity:
                         candidates.append(satid)
                 
-                # NOTE: Previous code
-                for satid in self.satellites: # 모든 위성 순회
-                    if self.covered_by(satid) and satid != self.serving_satellite.identity: # Condition: in Cover + not Serving Satellite
-                        candidates.append(satid)
+                # # NOTE: Previous code
+                # for satid in self.satellites: # 모든 위성 순회
+                #     if self.covered_by(satid) and satid != self.serving_satellite.identity: # Condition: in Cover + not Serving Satellite
+                #         candidates.append(satid)
                                                 
                 # Prepare Measurement Report message
                 data = {
@@ -216,14 +197,15 @@ class UE(Base):
                         if sat_id in self.geometry_data_cache:
                             cached_info = self.geometry_data_cache[sat_id]
                             print(f"  Satellite {sat_id}:")
-                            print(f"    - UE Coords : ({cached_info['ue_coords'][0]:.2f}, {cached_info['ue_coords'][1]:.2f})")
-                            print(f"    - Sat Coords: ({cached_info['sat_coords'][0]:.2f}, {cached_info['sat_coords'][1]:.2f})")
-                            print(f"    - Dist      : {cached_info['distance']:.2f} m")
-                            print(f"    - Elev      : {cached_info['elevation_angle']:.2f} deg")
-                            print(f"    - RSRP      : {cached_info['rsrp']:.2f} dBm")
+                            print(f"   - Coords    : UE({cached_info['ue_coords'][0]:.2f}, {cached_info['ue_coords'][1]:.2f}) | Sat({cached_info['sat_coords'][0]:.2f}, {cached_info['sat_coords'][1]:.2f})")
+                            print(f"   - Geometry  : Dist={cached_info['distance']:.2f}m | Elev={cached_info['elevation_angle']:.2f} degree | Ant_Angle={cached_info['antenna_angle']:.2f} degree")
+                            print(f"   - Path Loss : Total={cached_info['basic_path_loss']:.2f}dB (FSPL={cached_info['fspl']:.2f}, LoS Prob={cached_info['los_prob']:.1f}%)")
+                            print(f"   - RSRP Comp : TxPwr_RB={cached_info['tx_power_per_rb_dbm']:.2f}dBm | SatGain={cached_info['sat_tx_gain_dbi']:.2f}dBi | UEGain={cached_info['ue_rx_gain_dbi']:.2f}dBi")
+                            print(f"   - RSRP Final: {cached_info['rsrp']:.2f} dBm")
                         else:
                             print(f"  Satellite {sat_id}: No data in cache.")
                     print("----------------------------------------------------------")
+                    # --------- TRACING END ---------#
                     
                     # Message Send Protocol Start
                     self.env.process(
@@ -305,7 +287,7 @@ class UE(Base):
                         self.timestamps[-1]['isSuccess'] = False # Logging
                     self.state = INACTIVE # STATE CHANGE
                                 
-            # 1ms 대기: 1회의 action_monitor 이후, 제어권 인계 (1ms 주기의 모니터링 주기)
+            # 1ms 대기: 1회의 monitor_action 이후, 제어권 인계 (1ms 주기의 모니터링 주기)
             yield self.env.timeout(1)
             
 
@@ -375,6 +357,15 @@ class UE(Base):
         if ENVIRONMENT_TYPE == 'RURAL':
             return RURAL_LOS_PROB[idx]
         # TODO: 다른 환경 타입에 대한 값도 추가 가능
+        
+        # The code is a Python snippet that includes a debug print statement using the `print`
+        # function. It is printing out a debug message that includes the current simulation time
+        # (`self.env.now`), the elevation angle (`elevation_angle`), the index (`idx`), and the
+        # line-of-sight probability (`RURAL_LOS_PROB`). The message is formatted using f-strings in
+        # Python to include the values of these variables. This debug message is likely used for
+        # troubleshooting and monitoring the simulation process.
+        # NOTE: TRACE
+        print(f"DEBUG_LOS_PROB @{self.env.now:.2f}s: Elev={elevation_angle:.2f} -> Idx={idx} -> Prob={RURAL_LOS_PROB:.1f}%")
         return RURAL_LOS_PROB[idx] # 기본값
 
     def _sd_cl(self, elevation_angle):
@@ -393,6 +384,9 @@ class UE(Base):
         los_shadowing = los_std * random.gauss(0, 1)
         nlos_shadowing_and_clutter = nlos_std * random.gauss(0, 1) + nlos_cl
         
+        # # NOTE: TRACE
+        # print(f"DEBUG_SD_CL    @{self.env.now:.2f}s: Elev={elevation_angle:.2f} -> LoS_Shadow={los_shadowing:.2f} dB, NLoS_Total={nlos_shadowing_and_clutter:.2f} dB")
+        
         return los_shadowing, nlos_shadowing_and_clutter
 
     def _freespacePL(self, freq_hz, dist_m):
@@ -401,16 +395,28 @@ class UE(Base):
             return 0
         # MATLAB 공식: 20*log10(f) + 20*log10(d) + 20*log10(4*pi/c)
         # 단위를 Hz, m로 사용
-        return 20 * math.log10(dist_m) + 20 * math.log10(freq_hz) - 147.55
+        fspl = 20 * math.log10(freq_hz) + 20 * math.log10(dist_m) + 20 * math.log10(4 * math.pi / LIGHT_SPEED)
+        
+        # debug:
+        log10_freq_20 = 20 * math.log10(freq_hz)
+        log10_dist_20 = 20 * math.log10(dist_m)
+        log10_4pi_20 = 20 * math.log10(4 * math.pi / LIGHT_SPEED)
+        
+        # # NOTE: TRACE
+        # print(f"DEBUG_FSPL     @{self.env.now:.2f}s: Dist={dist_m:.2f} m -> FSPL={fspl:.2f} dB")
+        # print(f"freq_hz: {freq_hz}, dist_m: {dist_m:2f}")
+        # print(f"log10_freq_20: @{log10_freq_20:.2f}, log10_dist_20: @{log10_dist_20:.2f}, log10_4pi_20: @{log10_4pi_20:.2f}")
+        
+        return fspl
     
-    def _calculate_path_loss(self, geo_info):
+    def _calculate_basic_path_loss(self, geo_info):
         """
         MATLAB의 GET_LOSS 로직을 구현. 
         LoS/NLoS 확률을 적용하여 최종 경로 손실을 계산합니다.
         """
         dist_m = geo_info['distance']
         elev_angle = geo_info['elevation_angle']
-        freq_hz = SC9_CARRIER_FREQUENCY_HZ * 1_000_000 # MHz를 Hz로 변환
+        freq_hz = SC9_CARRIER_FREQUENCY_HZ
 
         # 1. FSPL(자유 공간 경로 손실) 계산
         fspl = self._freespacePL(freq_hz, dist_m)
@@ -423,42 +429,66 @@ class UE(Base):
         
         # 4. LoS/NLoS 확률을 가중치로 하여 최종 손실 계산
         # Loss = (Prob_LoS/100 * (FSPL + LoS_loss)) + ((100-Prob_LoS)/100 * (FSPL + NLoS_loss))
-        total_loss = (los_probability / 100) * (fspl + los_loss_component) + \
+        basic_path_loss = (los_probability / 100) * (fspl + los_loss_component) + \
                      ((100 - los_probability) / 100) * (fspl + nlos_loss_component)
-                     
-        return total_loss
+        
+        # # NOTE: TRACE
+        # print(f"DEBUG_BASIC_PATH_LOSS @{self.env.now:.2f}s: BASIC_PATH_LOSS={basic_path_loss:.2f} dB (FSPL={fspl:.2f}, ProbLoS={los_probability:.1f}%, sd_cl(los/nlos)={los_loss_component, nlos_loss_component})")
+        return {
+            "basic_path_loss": basic_path_loss,
+            "fspl": fspl,
+            "los_prob": los_probability,
+            "los_shadowing": los_loss_component,
+            "nlos_total_loss": nlos_loss_component
+        }
+    
+    def _calculate_antenna_gain(self, antenna_angle_deg):
+        # 0도일 경우, z=0이 되어 0으로 나누는 오류가 발생하므로 예외 처리
+        if antenna_angle_deg == 0:
+            return SC9_SATELLITE_TXGAIN
 
+        # 파라미터 설정
+        freq_hz = SC9_CARRIER_FREQUENCY_HZ
+        aperture_radius_m = SC9_SATELLITE_ANTENNA_APERTURE
+
+        ka = 2 * math.pi * freq_hz / LIGHT_SPEED * aperture_radius_m / 2
+        z = ka * math.sin(math.radians(antenna_angle_deg))
+        J = jv(1, z)
+        normalized_gain_linear = 4 * (abs(J / z))**2
+        gain_dbi = 10 * math.log10(normalized_gain_linear) + SC9_SATELLITE_TXGAIN
+        
+        return gain_dbi
+    
     def calculate_rsrp(self, geo_info):
-        """
-        최종 RSRP 계산을 위한 메인 함수. (MATLAB의 RB, RS 개념 반영)
-        경로 손실을 계산하고, 송신 파워 및 안테나 이득을 적용합니다.
-        """
         # 1. 전체 경로 손실 계산 (기존과 동일)
-        path_loss = self._calculate_path_loss(geo_info)
+        path_loss_details = self._calculate_basic_path_loss(geo_info)
         
         # 2. RB당 송신 파워 계산 (MATLAB 로직 반영)
         # 전체 Tx 파워를 RB 개수로 나눔 (dB 스케일에서는 빼기)
         tx_power_per_rb_dbm = SC9_SATELLITE_TXPW_dBm - 10 * math.log10(NUM_RESOURCE_BLOCKS)
         
-        # 3. 최종 RSRP 계산 (MATLAB 로직 반영)
+        # 3. Antenna Gain 계산
+        sat_tx_gain_dbi = self._calculate_antenna_gain(geo_info['antenna_angle'])
+        
+        # 4. 최종 RSRP 계산 (MATLAB 로직 반영)
         # RSRP = (RB당 파워) + (모든 안테나 이득) - (경로 손실) - (RS Factor)
         # TODO: Satellite의 Tx Antenna Gain은 추가 함수 구현 후 반영이 필요한 상태
-        rsrp_dbm = tx_power_per_rb_dbm + SC9_HANDHELD_RXGAIN \
-                   - path_loss - 10 * math.log10(REFERENCE_SIGNAL_FACTOR)
+        rsrp_dbm = tx_power_per_rb_dbm + sat_tx_gain_dbi + SC9_HANDHELD_RXGAIN - path_loss_details['basic_path_loss'] - 10 * math.log10(REFERENCE_SIGNAL_FACTOR)
         
-        return rsrp_dbm
+        path_loss_details['rsrp'] = rsrp_dbm
+        path_loss_details['tx_power_total_dbm'] = SC9_SATELLITE_TXPW_dBm
+        path_loss_details['tx_power_per_rb_dbm'] = tx_power_per_rb_dbm
+        path_loss_details['sat_tx_gain_dbi'] = sat_tx_gain_dbi
+        path_loss_details['ue_rx_gain_dbi'] = SC9_HANDHELD_RXGAIN
+        path_loss_details['rs_factor'] = REFERENCE_SIGNAL_FACTOR
+        
+        # # NOTE: TRACE
+        # print(f"DEBUG @{self.env.now:.2f}s: RSRP: {rsrp_dbm:.2f} (TXPW={SC9_SATELLITE_TXPW_dBm} dBm, TXPW/RB={tx_power_per_rb_dbm:.2f} dBm, SAT_TXGAIN={sat_tx_gain_dbi:.2f} dBi, HANDHELD_RXGAIN={SC9_HANDHELD_RXGAIN} dBi, PATH_LOSS={path_loss:.2f} dB, REFERENCE_SIGNAL_FACTOR={REFERENCE_SIGNAL_FACTOR})")
+        
+        return path_loss_details
 
     # ==================== Geometry Calculation Functions ======================
     def get_geometry_info(self, satellite):
-        """
-        특정 위성과의 기하학적 정보(거리, 고도각, 안테나 각도)를 한번에 계산하여 반환합니다.
-
-        Args:
-            satellite (Satellite): 정보를 계산할 대상 위성 객체
-
-        Returns:
-            dict: 거리(m), 고도각(degree), 안테나 각도(degree)를 포함하는 딕셔너리
-        """
         # --- 1. 직선 거리 (Slant Distance) 계산 ---
         # 지상에서의 2D 거리 (dx, dy)와 고도 차이(dz)를 이용해 3D 직선 거리를 계산합니다.
         dx = self.position_x - satellite.position_x
@@ -520,29 +550,12 @@ class UE(Base):
 # 현단계: 
 # 1) 거리, 고각, 안테나 각도 계산 반영
 # 2) 이는 특정 주기마다 수행되도록 하며 캐싱에 저장
-# 3) action_monitor는 캐싱 정보를 기반으로 수행 (특히 Measurement Report에 대해)
+# 3) monitor_action는 캐싱 정보를 기반으로 수행 (특히 Measurement Report에 대해)
 #
 # 다음 단계:
-# 1) 채널 모델을 거리, 고각, 안테나 각도 주기에 맞춰 계산 (진행 완료)
-# 1-1) 검산 과정 필요 (MATLAB으로 교차 검증해볼 것: 2025.08.13. 00:29 / geo_channel_phase1_250813 커밋버전)
-        """
-        --- [UE 1 Cached Geometry at 6700.00s] ---
-            Satellite 1:
-                - UE Coords : (-16974.48, 8132.79)
-                - Sat Coords: (644.44, 0.00)
-                - Dist      : 600313.73 m
-                - Elev      : 88.06 deg
-                - RSRP      : -313.52 dBm
-            Satellite 2:
-                - UE Coords : (-16974.48, 8132.79)
-                - Sat Coords: (-30605.56, 0.00)
-                - Dist      : 600209.92 m
-                - Elev      : 88.41 deg
-                - RSRP      : -314.08 dBm
-        -------------------------------------------
-        """
-#
-# 2) 안테나 페턴 함수를 별도로 만들고 이를 여기에 반영시킴
-# 3) config.py의 파워, 이득 등을 고려해서 DL에 대한 원신호 계산을 수행 (RSRP)
+# 1) 채널 모델을 거리, 고각, 안테나 각도 주기에 맞춰 계산 (완료)
+# 1-1) 검산 과정 필요 (MATLAB으로 교차 검증해볼 것: 2025.08.13. 00:29 / geo_channel_phase1_250813 커밋버전) (완료)
+# 2) 안테나 페턴 함수를 별도로 만들고 이를 여기에 반영시킴 (완료)
+# 3) config.py의 파워, 이득 등을 고려해서 DL에 대한 원신호 계산을 수행 (완료, RSRP까지 검증 끝)
 # 4) 지금까지는 필터링된 위성군에게만 적용해 계산되었으나, Interference 계산을 위해서는 전위성 군에 대한 조건부 스캔 확장 필요
 # 5) 이를 모두 반영해서 RSRP, SNR, SINR 등을 계산할 수 있도록 확장

@@ -97,10 +97,9 @@ EARTH_RADIUS = 6371*1000            # [m]
 # ㄴ Study Case 9: LEO-600 Satellite Parameters
 SC9_CARRIER_FREQUENCY_HZ = 2e9                   # [Hz], DL carrier frequency (2 GHz)
 SC9_BANDWIDTH_HZ = 20e6                          # [Hz], DL bandwidth (20 MHz)
-SC9_BANDWIDTH_MHZ = SC9_BANDWIDTH_HZ / 1e6       # [MHz], for EIRP density calculation
 SC9_SATELLITE_EIRP_DENSITY = 34                  # [dBW/MHz], satellite EIRP density
 
-SC9_SATELLITE_TXPW_dBm = SC9_SATELLITE_EIRP_DENSITY + 10 * math.log10(SC9_BANDWIDTH_MHZ * 1e-6)
+SC9_SATELLITE_TXPW_dBm = SC9_SATELLITE_EIRP_DENSITY + 10 * math.log10(SC9_BANDWIDTH_HZ * 1e-6) # 47.0103 dBm
 SC9_SATELLITE_TXPW_mW = 10 ** (SC9_SATELLITE_TXPW_dBm / 10)
 SC9_SATELLITE_TXPW_W  = SC9_SATELLITE_TXPW_mW / 1000
 
