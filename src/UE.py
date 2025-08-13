@@ -50,6 +50,7 @@ class UE(Base):
         self.previous_serving_sat_id = None
         self.targetID = None
         self.retransmit_counter = 0
+        self.handover_cooldown_end_time = -1
 
         # Running Process
         env.process(self.init())
@@ -177,7 +178,10 @@ class UE(Base):
         while True:
             # --- ACTION: Send Measurement Report ---
             # --- 서빙 위성 제외, 후보셀들에 대해서만 판별
-            if self.state == ACTIVE and self.send_request_condition_A3(): # Condition               
+            
+            # --Rollback Point--
+            # if self.state == ACTIVE and self.send_request_condition_A3(): 
+            if self.state == ACTIVE and self.env.now >= self.handover_cooldown_end_time and self.send_request_condition_A3():              
                 candidate_measurements = []
                 for sat_id, cached_info in self.geometry_data_cache.items():
                     if sat_id == self.serving_satellite.identity:
@@ -248,9 +252,11 @@ class UE(Base):
                     self.state = WAITING_RRC_CONFIGURATION # UE STATE CHANGE
                                     
             # --- ACTION: Trigger retransmission if conditions are met ---
-            if RETRANSMIT and self.state == WAITING_RRC_CONFIGURATION \
-            and (self.env.now - self.timer) > RETRANSMIT_THRESHOLD \
-            and self.retransmit_counter < MAX_RETRANSMIT:
+            # -- Rollback Point --
+            # if RETRANSMIT and self.state == WAITING_RRC_CONFIGURATION \
+            # and (self.env.now - self.timer) > RETRANSMIT_THRESHOLD \
+            # and self.retransmit_counter < MAX_RETRANSMIT:
+            if RETRANSMIT and self.state == WAITING_RRC_CONFIGURATION and (self.env.now - self.timer) > RETRANSMIT_THRESHOLD and self.retransmit_counter < MAX_RETRANSMIT:
                 # NOTE: Retransmission conditions
                 # 1. RETRANSMIT enabled (see config.py)
                 # 2. UE state is WAITING_RRC_CONFIGURATION
@@ -281,8 +287,9 @@ class UE(Base):
                     )
                     self.retransmit_counter += 1 # counter add
             
-                    
+
             # --- ACTION: RANDOM ACCESS Procedure ---
+            # -- Rollback Point: RACH는 건들지 않음 --
             if self.state == RRC_CONFIGURED:  # Condition: RRC_CONFIGURED (HO CMD 수신 상태)
                 if self.targetID and self.covered_by(self.targetID): # CHECK
                     target = self.satellites[self.targetID]
@@ -299,32 +306,63 @@ class UE(Base):
                     )
                     self.state = WAITING_RRC_ULGRANT # STATE CHANGE
                     
-            # Switch to INACTIVE State
-            if self.serving_satellite is not None and self.outside_coverage():
-                # TODO: RLF, HOF 등이 발생하는 경우가 outside_coverage()가 되야함
-                print(f"UE {self.identity} lost connection at time {self.env.now} from satellite {self.serving_satellite.identity}") # Logging
-                self.serving_satellite = None # serv_idx none
+            # -- Rollback Point --
+            # --- [핵심 수정] SINR 기반의 새로운 연결 종료 로직 ---
+            if self.state == ACTIVE and self.serving_satellite and \
+               self.serving_satellite.identity in self.geometry_data_cache:
                 
-                # ACTIVE/HO CMD 대기 상태에서
-                if self.state == ACTIVE or self.state == WAITING_RRC_CONFIGURATION:
-                    if self.state == WAITING_RRC_CONFIGURATION:
-                        print(f"UE {self.identity} handover failure at time {self.env.now}") # Logging
-                        self.timestamps[-1]['timestamp'].append(self.env.now) # Logging
-                        self.timestamps[-1]['isSuccess'] = False # Logging
-                    self.state = INACTIVE # STATE CHANGE
+                # 조건 1: 서빙셀의 SINR이 매우 나쁜가?
+                serving_sinr = self.geometry_data_cache[self.serving_satellite.identity]['sinr']
+                if serving_sinr <= THRESHOLD_Q_OUT:
+                    
+                    # 조건 2: 갈아탈 만한 다른 좋은 위성이 없는가?
+                    # 이웃 위성들의 SINR 리스트를 생성
+                    neighbor_sinrs = [info['sinr'] for sat_id, info in self.geometry_data_cache.items() \
+                                      if sat_id != self.serving_satellite.identity]
+                    
+                    # all() 함수는 모든 항목이 조건에 맞아야 True. 즉, 모든 이웃의 SINR이 -6dB보다 낮은지 확인
+                    if all(sinr < THRESHOLD_Q_IN for sinr in neighbor_sinrs):
+                        print(f"--- UE {self.identity} Connection Lost at {self.env.now:.2f}s ---")
+                        print(f"    Serving SINR ({serving_sinr:.2f} dB) <= Threshold ({THRESHOLD_Q_OUT} dB)")
+                        print(f"    AND No suitable neighbor found.")
+                        
+                        self.serving_satellite = None
+                        self.state = INACTIVE
+
+            # # Switch to INACTIVE State
+            # if self.serving_satellite is not None and self.outside_coverage():
+            #     # TODO: RLF, HOF 등이 발생하는 경우가 outside_coverage()가 되야함
+            #     print(f"UE {self.identity} lost connection at time {self.env.now} from satellite {self.serving_satellite.identity}") # Logging
+            #     self.serving_satellite = None # serv_idx none
+                
+            #     # ACTIVE/HO CMD 대기 상태에서
+            #     if self.state == ACTIVE or self.state == WAITING_RRC_CONFIGURATION:
+            #         if self.state == WAITING_RRC_CONFIGURATION:
+            #             print(f"UE {self.identity} handover failure at time {self.env.now}") # Logging
+            #             self.timestamps[-1]['timestamp'].append(self.env.now) # Logging
+            #             self.timestamps[-1]['isSuccess'] = False # Logging
+            #         self.state = INACTIVE # STATE CHANGE
                                 
             # 1ms 대기: 1회의 ACTION_MONITOR 이후, 제어권 인계 (1ms 주기의 모니터링 주기)
             yield self.env.timeout(1)
             
 
     # ==================== Utils (Not related to Simpy) =============
+    # -- RollBack Point --
+    # def covered_by(self, satelliteID):
+    #     # TODO: 필터링 대상 (현: 거리기반 / 후: RSRP 기반 필터링 구현 필요, 혹은 주변 검사 후 다음단계로 삽입 등 고려)
+    #     satellite = self.satellites[satelliteID]     
+    #     # UE와 위성의 2D 지상 거리를 계산
+    #     d = math.sqrt(((self.position_x - satellite.position_x) ** 2) +
+    #                 ((self.position_y - satellite.position_y) ** 2))
+    #     return d <= 50000
     def covered_by(self, satelliteID):
         # TODO: 필터링 대상 (현: 거리기반 / 후: RSRP 기반 필터링 구현 필요, 혹은 주변 검사 후 다음단계로 삽입 등 고려)
         satellite = self.satellites[satelliteID]     
         # UE와 위성의 2D 지상 거리를 계산
         d = math.sqrt(((self.position_x - satellite.position_x) ** 2) +
                     ((self.position_y - satellite.position_y) ** 2))
-        return d <= 50000 # 50 km 반경 (약 1-tiers)
+        return d <= 1.5 * SATELLITE_R
 
     def send_request_condition_A3(self):
         # 서빙 위성 정보가 캐시에 없으면 결정 불가
@@ -348,12 +386,13 @@ class UE(Base):
                 
         return False
 
-    # TODO: RLF를 기반으로 outside_coverage를 구성해야함 (단순 영역을 벗어나는 것이 아님)
-    def outside_coverage(self):
-        p = (self.position_x, self.position_y)
-        d1_serve = math.dist(p, (self.serving_satellite.position_x, self.serving_satellite.position_y))
-        # TODO We may want to remove the second condition someday...
-        return d1_serve >= SATELLITE_R and self.position_x < self.serving_satellite.position_x
+    # -- Rollback Point --
+    # # TODO: RLF를 기반으로 outside_coverage를 구성해야함 (단순 영역을 벗어나는 것이 아님)
+    # def outside_coverage(self):
+    #     p = (self.position_x, self.position_y)
+    #     d1_serve = math.dist(p, (self.serving_satellite.position_x, self.serving_satellite.position_y))
+    #     # TODO We may want to remove the second condition someday...
+    #     return d1_serve >= 1.25*SATELLITE_R #and self.position_x < self.serving_satellite.position_x
 
     # ==================== Channel Model Helper Functions (from MATLAB) ======================
     def _los_prob(self, elevation_angle):
@@ -579,6 +618,9 @@ class UE(Base):
 2) 안테나 패턴 구현, 채널 모델 구현 (RSRP) - DONE
 3) 필더링 위성 외 Interference용 주변 위성 스캔 확장 - DONE
 4) SINR/SNR 구현: 위성 필터링 범위, 계산 범위 >> Noise는 수정이 필요할 것으로 보임 - DONE
+4-1) MR을 발송 시 현 상황 로그 출력 + 발송한 MR 정보 출력을 구현해서 확인, Satellite.py에서도 수용하도록 조정 - DONE
+4-2) covered_by, outside에 대한 메소드를 신호 측정으로 대체, 핸드오버가 2차 발생하지 않는 것을 해결한 것으로 확인됨 - DONE
+4-3) TTT 구현, SINR에 대한 기록 그래프 만드는 메소드 추가
 5) K-filter 구현
 
 <TODO: protocol>

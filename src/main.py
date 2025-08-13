@@ -80,7 +80,7 @@ POSITIONS = utils.generate_points_with_ylim(NUMBER_UE, SATELLITE_R - 100, 0, 0, 
 # This is simply for tracing TIME STAMP in Terminal
 def monitor_timestamp(env):
     while True:
-        print(f"Simulation Time {env.now:.3f}", file=sys.stderr)
+        print(f"Simulation Time {env.now}", file=sys.stderr)
         yield env.timeout(1)
 
 
