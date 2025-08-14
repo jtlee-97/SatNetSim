@@ -35,9 +35,15 @@ It is designed to model **handover scenarios in Low Earth Orbit (LEO) satellite 
 ## 📬 Contact
 For inquiries regarding **SatNetSim1**, please contact:  
 
-**Mr. Jongtae Lee**  
-Ph.D. Candidate, Ajou University  
-📧 Email: [jtlee830@ajou.ac.kr](mailto:jtlee830@ajou.ac.kr)
+Jongtae Lee (Ph.D. Candidate)
+Wireless Internet aNd Network Engineering Research (WINNER) Lab
+Dept. of Artificial Intelligence Convergence Network
+Ajou University, Suwon, Republic of Korea
+
+- E-mail: jtlee830@ajou.ac.kr
+- Phone: +82-(0)31-219-2474
+- Lab Homepage: https://winner.ajou.ac.kr/
+- Personal CV: https://sites.google.com/view/jongtaelee-cv/introduce
 
 ---
 *© SatNetSim1 — All Rights Reserved.*
